@@ -1,6 +1,7 @@
 """First-run bootstrap orchestration."""
 
 import asyncio
+import logging
 import os
 import subprocess
 import sys
@@ -10,6 +11,8 @@ from typing import Callable, Optional
 from telegram import Bot
 
 from . import chat, config
+
+logger = logging.getLogger(__name__)
 
 GREETING = (
     "Hello! I'm Corphish, your personal AI assistant. "
@@ -74,7 +77,7 @@ async def _wait_for_first_message(bot: Bot) -> int:
     Returns:
         The chat_id of the first message received.
     """
-    print("Send any message to your bot in Telegram to continue setup...")
+    logger.info("Send any message to your bot in Telegram to continue setup...")
     while True:
         updates = await bot.get_updates(timeout=10)
         for update in updates:
@@ -101,7 +104,7 @@ def _install_launchd() -> None:
     launch_agents_dir.mkdir(parents=True, exist_ok=True)
     plist_path = launch_agents_dir / f"{_PLIST_LABEL}.plist"
     plist_path.write_text(plist_content)
-    print(f"Installed launchd plist at {plist_path}")
+    logger.info("Installed launchd plist at %s", plist_path)
 
     result = subprocess.run(
         ["launchctl", "load", str(plist_path)],
@@ -109,9 +112,9 @@ def _install_launchd() -> None:
         text=True,
     )
     if result.returncode != 0:
-        print(f"Warning: launchctl load failed: {result.stderr}", file=sys.stderr)
+        logger.warning("launchctl load failed: %s", result.stderr)
     else:
-        print("Daemon registered with launchd.")
+        logger.info("Daemon registered with launchd.")
 
 
 async def run_bootstrap(
@@ -146,7 +149,7 @@ async def run_bootstrap(
     Raises:
         RuntimeError: If required environment variables are missing.
     """
-    print("Starting Corphish first-run setup...")
+    logger.info("Starting Corphish first-run setup...")
 
     # Phase 1: Verify env vars.
     token = get_token_fn()
@@ -158,14 +161,14 @@ async def run_bootstrap(
 
     # Phase 3: Persist chat_id.
     save_config_fn({"chat_id": chat_id})
-    print(f"✓ Chat ID saved: {chat_id}")
+    logger.info("Chat ID saved: %s", chat_id)
 
     # Phase 4: Send greeting.
     await send_message_fn(bot, chat_id, GREETING)
-    print("✓ Greeting sent")
+    logger.info("Greeting sent")
 
     # Phase 5: Install launchd.
     install_fn = install_launchd_fn or _install_launchd
     install_fn()
 
-    print("Bootstrap complete.")
+    logger.info("Bootstrap complete.")
