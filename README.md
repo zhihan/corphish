@@ -65,6 +65,26 @@ On first run, the bootstrap flow will:
 
 After bootstrap completes, the daemon is running and managed by launchd. You don't need to start it manually again.
 
+## CLI commands
+
+Corphish provides a set of subcommands for interacting with the daemon and Telegram:
+
+```bash
+# Run the daemon loop (default behavior when no command is given)
+corphish run
+
+# Run first-time bootstrap setup explicitly
+corphish bootstrap
+
+# Send a message to the configured Telegram chat
+corphish send Hello from the CLI!
+
+# Check configuration status (config path, chat_id, bootstrap state)
+corphish status
+```
+
+Running `corphish` with no subcommand is equivalent to `corphish run` — it auto-bootstraps on first run.
+
 ### Running thereafter
 
 The daemon starts automatically at login via launchd. To manage it manually:
