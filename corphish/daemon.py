@@ -1,12 +1,15 @@
 """Daemon loop: polls Telegram, routes through Claude, replies."""
 
 import asyncio
+import logging
 from typing import Callable, Optional
 
 from telegram import Bot
 
 from . import chat, config
 from .claude_client import ClaudeClient
+
+logger = logging.getLogger(__name__)
 
 
 async def _poll_updates(bot: Bot, offset: int, timeout: int = 10):
@@ -55,7 +58,7 @@ async def run_daemon(
     client = claude or ClaudeClient()
     offset = 0
 
-    print(f"Daemon started, listening on chat {chat_id}")
+    logger.info("Daemon started, listening on chat %s", chat_id)
 
     while True:
         updates = await poll(bot, offset)
@@ -69,12 +72,12 @@ async def run_daemon(
                 continue
 
             user_text = update.message.text
-            print(f"[user] {user_text}")
+            logger.info("[user] %s", user_text)
 
             async with client.lock:
                 reply = await client.send(user_text)
 
-            print(f"[assistant] {reply}")
+            logger.info("[assistant] %s", reply)
             await send_message_fn(bot, chat_id, reply)
 
         if once:
