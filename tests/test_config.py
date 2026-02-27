@@ -70,14 +70,6 @@ def test_save_config_overwrites_existing_key(tmp_path, monkeypatch):
     assert config.load_config()["space_name"] == "spaces/new"
 
 
-def test_save_config_deep_merges_nested(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    config.save_config({"heartbeat": {"interval_minutes": 30, "idle_only": True}})
-    config.save_config({"heartbeat": {"interval_minutes": 15}})
-    result = config.load_config()["heartbeat"]
-    assert result["interval_minutes"] == 15
-    assert result["idle_only"] is True
-
 
 def test_is_first_run_true_when_no_config(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))

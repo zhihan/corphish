@@ -6,7 +6,6 @@ Handles XDG-compliant config paths, TOML read/write, and first-run detection.
 import os
 import tomllib
 from pathlib import Path
-from typing import Any
 
 import tomli_w
 
@@ -60,7 +59,7 @@ def ensure_config_dir() -> Path:
     return path
 
 
-def load_config() -> dict[str, Any]:
+def load_config() -> dict:
     """Reads config.toml and returns its contents.
 
     Returns:
@@ -73,15 +72,14 @@ def load_config() -> dict[str, Any]:
         return tomllib.load(f)
 
 
-def save_config(data: dict[str, Any]) -> None:
+def save_config(data: dict) -> None:
     """Merges data into config.toml, creating it if necessary.
 
     Args:
         data: Key/value pairs to merge into the existing config.
     """
     ensure_config_dir()
-    existing = load_config()
-    merged = _deep_merge(existing, data)
+    merged = load_config() | data
     config_path = get_config_path()
     tmp_path = config_path.with_suffix(".tmp")
     with open(tmp_path, "wb") as f:
@@ -98,20 +96,3 @@ def is_first_run() -> bool:
     return "space_name" not in load_config()
 
 
-def _deep_merge(base: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
-    """Recursively merges updates into base.
-
-    Args:
-        base: The original dict.
-        updates: Values to merge in; nested dicts are merged recursively.
-
-    Returns:
-        A new dict with updates applied.
-    """
-    result = dict(base)
-    for key, value in updates.items():
-        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-            result[key] = _deep_merge(result[key], value)
-        else:
-            result[key] = value
-    return result
