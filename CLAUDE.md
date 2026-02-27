@@ -10,10 +10,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 The system is composed of four components that communicate through a shared SQLite database:
 
-### Iris Consumer (push-based ingestion)
+### Message Consumer (push-based ingestion)
 - Runs `gchat --tail json` as a subprocess and pipes its output into SQLite
 - Responsible only for ingestion — writes raw messages to the DB without processing
-- Named "Iris" (the messenger goddess)
 
 ### Message Processor (polling loop)
 - Polls the SQLite database every second for unprocessed messages
@@ -46,4 +45,10 @@ The system is composed of four components that communicate through a shared SQLi
 - **Database**: SQLite (via `sqlite3` stdlib or `aiosqlite`)
 - **Claude integration**: `anthropic` SDK with the agent/conversation API
 - **GChat integration**: `gchat` CLI tool (invoked as a subprocess)
-- **Process management**: systemd service units (or similar) for the daemon components
+- **Process management**: launchd (macOS) for the daemon components
+
+## Development Workflow
+
+- **Small changes**: implement one piece of functionality at a time
+- **Extensive tests**: every change must have thorough test coverage
+- **Always use PRs**: never commit directly to main; open a PR for every change so the user can review before merging
