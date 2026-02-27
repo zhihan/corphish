@@ -1,6 +1,6 @@
 # HEARTBEAT.md
 
-This prompt is delivered to you every 5 minutes by the heartbeat runner. It is not a message from the user.
+This prompt is delivered to you every 30 minutes by the heartbeat runner. It is not a message from the user.
 
 ## Your Task
 
