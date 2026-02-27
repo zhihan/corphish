@@ -34,9 +34,10 @@ def test_build_bot_returns_bot_instance(monkeypatch):
 
 async def test_send_message_calls_bot(monkeypatch):
     mock_bot = MagicMock()
-    mock_bot.send_message = AsyncMock()
-    await send_message(mock_bot, chat_id=42, text="hello")
+    mock_bot.send_message = AsyncMock(return_value=MagicMock())
+    result = await send_message(mock_bot, chat_id=42, text="hello")
     mock_bot.send_message.assert_awaited_once_with(chat_id=42, text="hello")
+    assert result is mock_bot.send_message.return_value
 
 
 async def test_send_message_empty_text_raises():

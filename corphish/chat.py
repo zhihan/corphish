@@ -2,7 +2,7 @@
 
 import os
 
-from telegram import Bot
+from telegram import Bot, Message
 
 
 def get_bot_token() -> str:
@@ -35,7 +35,7 @@ def build_bot(token: str) -> Bot:
     return Bot(token=token)
 
 
-async def send_message(bot: Bot, chat_id: int, text: str) -> None:
+async def send_message(bot: Bot, chat_id: int, text: str) -> Message:
     """Sends a text message to a Telegram chat.
 
     Args:
@@ -43,9 +43,12 @@ async def send_message(bot: Bot, chat_id: int, text: str) -> None:
         chat_id: The target chat ID.
         text: The message text to send.
 
+    Returns:
+        The sent Message object.
+
     Raises:
         ValueError: If text is empty.
     """
     if not text:
         raise ValueError("text must not be empty")
-    await bot.send_message(chat_id=chat_id, text=text)
+    return await bot.send_message(chat_id=chat_id, text=text)
