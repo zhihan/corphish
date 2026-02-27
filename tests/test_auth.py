@@ -92,6 +92,23 @@ def test_expired_token_is_saved_after_refresh(tmp_path):
     assert token_path.read_text() == '{"refreshed": true}'
 
 
+def test_corrupted_token_falls_through_to_browser_flow(tmp_path):
+    secret_path = tmp_path / "client_secret.json"
+    secret_path.write_text("{}")
+    token_path = tmp_path / "token.json"
+    token_path.write_text("not valid json {{{{")
+
+    mock_creds = MagicMock(spec=["to_json"])
+    mock_creds.to_json.return_value = "{}"
+    mock_flow = MagicMock()
+    mock_flow.run_local_server.return_value = mock_creds
+
+    result = get_credentials(secret_path, token_path, flow_factory=lambda p, s: mock_flow)
+
+    mock_flow.run_local_server.assert_called_once_with(port=0)
+    assert result is mock_creds
+
+
 def test_no_token_runs_browser_flow(tmp_path):
     secret_path = tmp_path / "client_secret.json"
     secret_path.write_text("{}")

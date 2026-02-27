@@ -75,7 +75,10 @@ def _load_token(token_path: Path) -> Optional[Credentials]:
     """
     if not token_path.exists():
         return None
-    return Credentials.from_authorized_user_file(str(token_path), SCOPES)
+    try:
+        return Credentials.from_authorized_user_file(str(token_path), SCOPES)
+    except Exception:
+        return None
 
 
 def _save_token(creds: Credentials, token_path: Path) -> None:
@@ -86,4 +89,6 @@ def _save_token(creds: Credentials, token_path: Path) -> None:
         token_path: Destination path for the token file.
     """
     token_path.parent.mkdir(parents=True, exist_ok=True)
-    token_path.write_text(creds.to_json())
+    tmp = token_path.with_suffix(".tmp")
+    tmp.write_text(creds.to_json())
+    tmp.replace(token_path)
