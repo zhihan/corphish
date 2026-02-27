@@ -39,6 +39,15 @@ async def test_bootstrap_command_dispatches():
     assert args.command == "bootstrap"
 
 
+async def test_run_once_command_dispatches():
+    with patch("corphish.__main__.dispatch", new_callable=AsyncMock) as mock_dispatch:
+        await _async_main(["run_once", "hello"])
+
+    args = mock_dispatch.call_args[0][0]
+    assert args.command == "run_once"
+    assert args.text == ["hello"]
+
+
 async def test_status_command_dispatches():
     with patch("corphish.__main__.dispatch", new_callable=AsyncMock) as mock_dispatch:
         await _async_main(["status"])
