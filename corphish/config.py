@@ -30,24 +30,6 @@ def get_config_path() -> Path:
     return get_config_dir() / "config.toml"
 
 
-def get_client_secret_path() -> Path:
-    """Returns the path to client_secret.json.
-
-    Returns:
-        Path to the Google OAuth2 client secret file.
-    """
-    return get_config_dir() / "client_secret.json"
-
-
-def get_token_path() -> Path:
-    """Returns the path to token.json.
-
-    Returns:
-        Path to the cached OAuth2 token file.
-    """
-    return get_config_dir() / "token.json"
-
-
 def ensure_config_dir() -> Path:
     """Creates the config directory if it does not exist.
 
@@ -88,11 +70,9 @@ def save_config(data: dict) -> None:
 
 
 def is_first_run() -> bool:
-    """Returns True if no space has been configured yet.
+    """Returns True if no Telegram chat has been configured yet.
 
     Returns:
-        True if space_name is absent from config, False otherwise.
+        True if chat_id is absent from config, False otherwise.
     """
-    return "space_name" not in load_config()
-
-
+    return "chat_id" not in load_config()
