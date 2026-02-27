@@ -2,8 +2,6 @@
 
 from pathlib import Path
 
-import pytest
-
 from corphish import config
 
 
@@ -16,6 +14,12 @@ def test_get_config_dir_default(tmp_path, monkeypatch):
 def test_get_config_dir_xdg(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     assert config.get_config_dir() == tmp_path / "xdg" / "corphish"
+
+
+def test_get_config_dir_empty_xdg_falls_back_to_default(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", "")
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    assert config.get_config_dir() == tmp_path / ".config" / "corphish"
 
 
 def test_get_config_path(tmp_path, monkeypatch):

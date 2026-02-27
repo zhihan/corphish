@@ -17,7 +17,7 @@ def get_config_dir() -> Path:
     Returns:
         Path to ~/.config/corphish/ or $XDG_CONFIG_HOME/corphish/.
     """
-    xdg = os.environ.get("XDG_CONFIG_HOME")
+    xdg = os.environ.get("XDG_CONFIG_HOME") or None
     base = Path(xdg) if xdg else Path.home() / ".config"
     return base / "corphish"
 
@@ -82,8 +82,11 @@ def save_config(data: dict[str, Any]) -> None:
     ensure_config_dir()
     existing = load_config()
     merged = _deep_merge(existing, data)
-    with open(get_config_path(), "wb") as f:
+    config_path = get_config_path()
+    tmp_path = config_path.with_suffix(".tmp")
+    with open(tmp_path, "wb") as f:
         tomli_w.dump(merged, f)
+    tmp_path.replace(config_path)
 
 
 def is_first_run() -> bool:
