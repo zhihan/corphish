@@ -4,9 +4,7 @@ import asyncio
 import logging
 import sys
 
-from . import config
-from .bootstrap import run_bootstrap
-from .daemon import run_daemon
+from .cli import build_parser, dispatch
 
 
 def _configure_logging() -> None:
@@ -18,13 +16,12 @@ def _configure_logging() -> None:
     )
 
 
-async def _async_main() -> None:
-    """Runs bootstrap on first launch, otherwise starts the daemon."""
+async def _async_main(argv: list[str] | None = None) -> None:
+    """Parses CLI arguments and dispatches to the appropriate command."""
     _configure_logging()
-    if config.is_first_run():
-        await run_bootstrap()
-    else:
-        await run_daemon()
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    await dispatch(args)
 
 
 def main() -> None:
