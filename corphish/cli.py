@@ -3,12 +3,13 @@
 import argparse
 import asyncio
 import logging
+import os
 import sys
 from typing import Callable, Optional
 
 from . import config
 from .bootstrap import run_bootstrap
-from .chat import build_bot, get_bot_token, send_message
+from .claude_client import ClaudeClient
 from .daemon import run_daemon
 
 logger = logging.getLogger(__name__)
@@ -29,7 +30,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("run", help="Run the daemon loop (default)")
     sub.add_parser("bootstrap", help="Run first-time bootstrap setup")
 
-    send_parser = sub.add_parser("send", help="Send a message to the configured chat")
+    send_parser = sub.add_parser(
+        "send", help="Send a message to Claude and print the response"
+    )
     send_parser.add_argument("text", nargs="+", help="Message text to send")
 
     sub.add_parser("status", help="Show current configuration status")
@@ -40,35 +43,30 @@ def build_parser() -> argparse.ArgumentParser:
 async def cmd_send(
     text: str,
     *,
-    get_token_fn: Callable = get_bot_token,
-    build_bot_fn: Callable = build_bot,
-    load_config_fn: Callable = config.load_config,
-    send_message_fn: Callable = send_message,
-) -> None:
-    """Sends a message to the configured Telegram chat.
+    client_factory: Optional[Callable[[], ClaudeClient]] = None,
+) -> str:
+    """Sends a message to Claude and returns the response.
 
     Args:
         text: The message text to send.
-        get_token_fn: Returns the Telegram bot token.
-        build_bot_fn: Builds a Bot from a token.
-        load_config_fn: Returns the current config dict.
-        send_message_fn: Sends a message via Telegram.
+        client_factory: Callable that returns a ClaudeClient instance.
+            Defaults to creating a new ClaudeClient (reads ANTHROPIC_API_KEY
+            from the environment).
+
+    Returns:
+        Claude's response text.
 
     Raises:
-        SystemExit: If not bootstrapped (no chat_id configured).
+        SystemExit: If ANTHROPIC_API_KEY is not set.
     """
-    cfg = load_config_fn()
-    chat_id = cfg.get("chat_id")
-    if chat_id is None:
-        logger.error(
-            "Not bootstrapped yet. Run 'corphish bootstrap' first to configure a chat."
-        )
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        logger.error("ANTHROPIC_API_KEY is not set in the environment.")
         sys.exit(1)
 
-    token = get_token_fn()
-    bot = build_bot_fn(token)
-    await send_message_fn(bot, chat_id, text)
-    logger.info("Message sent to chat %s", chat_id)
+    factory = client_factory or ClaudeClient
+    client = factory()
+    response = await client.send(text)
+    return response
 
 
 def cmd_status(
@@ -113,7 +111,8 @@ async def dispatch(args: argparse.Namespace) -> None:
 
     if command == "send":
         text = " ".join(args.text)
-        await cmd_send(text)
+        response = await cmd_send(text)
+        print(response)
     elif command == "bootstrap":
         await run_bootstrap()
     elif command == "status":

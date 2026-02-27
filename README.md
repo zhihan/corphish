@@ -76,12 +76,14 @@ corphish run
 # Run first-time bootstrap setup explicitly
 corphish bootstrap
 
-# Send a message to the configured Telegram chat
+# Send a message to Claude and print the response (local chat, no Telegram)
 corphish send Hello from the CLI!
 
 # Check configuration status (config path, chat_id, bootstrap state)
 corphish status
 ```
+
+`corphish send` is a local chat — it sends your message directly to Claude via the API and prints the response to stdout. It does not go through Telegram. Requires `ANTHROPIC_API_KEY` to be set.
 
 Running `corphish` with no subcommand is equivalent to `corphish run` — it auto-bootstraps on first run.
 

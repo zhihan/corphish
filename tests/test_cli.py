@@ -54,42 +54,40 @@ class TestBuildParser:
 
 
 class TestCmdSend:
-    async def test_send_message_success(self):
-        mock_bot = MagicMock()
-        mock_send = AsyncMock()
+    async def test_send_returns_claude_response(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-key")
+        mock_client = AsyncMock()
+        mock_client.send.return_value = "Hello from Claude!"
 
-        await cmd_send(
+        result = await cmd_send(
             "hello world",
-            get_token_fn=lambda: "fake-token",
-            build_bot_fn=lambda token: mock_bot,
-            load_config_fn=lambda: {"chat_id": 123},
-            send_message_fn=mock_send,
+            client_factory=lambda: mock_client,
         )
 
-        mock_send.assert_awaited_once_with(mock_bot, 123, "hello world")
+        mock_client.send.assert_awaited_once_with("hello world")
+        assert result == "Hello from Claude!"
 
-    async def test_send_exits_if_not_bootstrapped(self):
+    async def test_send_exits_if_no_api_key(self, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         with pytest.raises(SystemExit) as exc_info:
-            await cmd_send(
-                "hello",
-                get_token_fn=lambda: "fake-token",
-                build_bot_fn=lambda token: MagicMock(),
-                load_config_fn=lambda: {},
-                send_message_fn=AsyncMock(),
-            )
+            await cmd_send("hello", client_factory=lambda: AsyncMock())
         assert exc_info.value.code == 1
 
-    async def test_send_does_not_call_bot_if_not_bootstrapped(self):
-        mock_send = AsyncMock()
+    async def test_send_does_not_call_claude_if_no_api_key(self, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        mock_client = AsyncMock()
         with pytest.raises(SystemExit):
-            await cmd_send(
-                "hello",
-                get_token_fn=lambda: "fake-token",
-                build_bot_fn=lambda token: MagicMock(),
-                load_config_fn=lambda: {},
-                send_message_fn=mock_send,
-            )
-        mock_send.assert_not_awaited()
+            await cmd_send("hello", client_factory=lambda: mock_client)
+        mock_client.send.assert_not_awaited()
+
+    async def test_send_passes_text_to_client(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-key")
+        mock_client = AsyncMock()
+        mock_client.send.return_value = "response"
+
+        await cmd_send("multi word message", client_factory=lambda: mock_client)
+
+        mock_client.send.assert_awaited_once_with("multi word message")
 
 
 # --- cmd_status tests ---
@@ -154,13 +152,19 @@ class TestCmdStatus:
 
 
 class TestDispatch:
-    async def test_dispatch_send(self):
+    async def test_dispatch_send_prints_response(self, capsys):
         parser = build_parser()
         args = parser.parse_args(["send", "hi", "there"])
 
-        with patch("corphish.cli.cmd_send", new_callable=AsyncMock) as mock_send:
+        with patch(
+            "corphish.cli.cmd_send", new_callable=AsyncMock
+        ) as mock_send:
+            mock_send.return_value = "Claude says hello"
             await dispatch(args)
             mock_send.assert_awaited_once_with("hi there")
+
+        captured = capsys.readouterr()
+        assert "Claude says hello" in captured.out
 
     async def test_dispatch_bootstrap(self):
         parser = build_parser()
