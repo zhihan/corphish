@@ -1,7 +1,8 @@
 """Tests for corphish.daemon."""
 
+import asyncio
 import logging
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -133,8 +134,8 @@ async def test_daemon_filters_mixed_chat_ids():
     assert calls[1].args[0] == "also good"
 
 
-async def test_daemon_continues_after_send_failure():
-    """The daemon should log errors and keep processing, not crash."""
+async def test_daemon_continues_after_claude_failure():
+    """The daemon should log Claude errors and keep processing, not crash."""
     updates = [
         _make_update(1, 42, "boom"),
         _make_update(2, 42, "ok"),
@@ -146,15 +147,27 @@ async def test_daemon_continues_after_send_failure():
 
     await run_daemon(**{k: v for k, v in deps.items() if k != "_bot"})
 
-    # First message failed, second succeeded
+    # First message failed (Claude), second succeeded
     assert deps["claude"].send.await_count == 2
+    # send_message should only be called for the second (successful) message
     deps["send_message_fn"].assert_awaited_once_with(
         deps["_bot"], 42, "reply-ok"
     )
 
 
+async def test_daemon_skips_send_when_claude_fails():
+    """When Claude call fails, send_message must not be called for that message."""
+    updates = [_make_update(1, 42, "boom")]
+    deps = _make_deps(chat_id=42, updates=updates)
+    deps["claude"].send = AsyncMock(side_effect=RuntimeError("API down"))
+
+    await run_daemon(**{k: v for k, v in deps.items() if k != "_bot"})
+
+    deps["send_message_fn"].assert_not_awaited()
+
+
 async def test_daemon_continues_after_telegram_send_failure():
-    """If Telegram send fails, the loop should continue."""
+    """If Telegram send fails, the loop should continue processing."""
     updates = [
         _make_update(1, 42, "first"),
         _make_update(2, 42, "second"),
@@ -171,6 +184,25 @@ async def test_daemon_continues_after_telegram_send_failure():
     assert deps["send_message_fn"].await_count == 2
 
 
+async def test_daemon_continues_after_telegram_network_error():
+    """Regression: httpx/getaddrinfo errors on send_message must not crash."""
+    updates = [
+        _make_update(1, 42, "first"),
+        _make_update(2, 42, "second"),
+    ]
+    deps = _make_deps(chat_id=42, updates=updates)
+    deps["claude"].send = AsyncMock(side_effect=["r1", "r2"])
+    deps["send_message_fn"] = AsyncMock(
+        side_effect=[OSError("[Errno 8] nodename nor servname provided"), None]
+    )
+
+    await run_daemon(**{k: v for k, v in deps.items() if k != "_bot"})
+
+    # Both messages processed, second send succeeded
+    assert deps["claude"].send.await_count == 2
+    assert deps["send_message_fn"].await_count == 2
+
+
 async def test_daemon_continues_after_poll_failure():
     """If polling Telegram raises, the daemon should log and continue."""
     deps = _make_deps(chat_id=42)
@@ -181,3 +213,37 @@ async def test_daemon_continues_after_poll_failure():
     # Should not crash — Claude and Telegram send should not be called
     deps["claude"].send.assert_not_awaited()
     deps["send_message_fn"].assert_not_awaited()
+
+
+async def test_daemon_poll_backoff(monkeypatch):
+    """Consecutive poll failures should trigger exponential backoff."""
+    slept = []
+
+    async def fake_sleep(seconds):
+        slept.append(seconds)
+
+    # Patch sleep in the daemon module specifically
+    monkeypatch.setattr("corphish.daemon.asyncio.sleep", fake_sleep)
+
+    call_count = 0
+
+    async def poll_fn(bot, offset):
+        nonlocal call_count
+        call_count += 1
+        if call_count <= 3:
+            raise RuntimeError("network down")
+        if call_count == 4:
+            return []
+        raise KeyboardInterrupt  # stop after one successful poll
+
+    deps = _make_deps(chat_id=42)
+    deps["poll_fn"] = poll_fn
+    deps["once"] = False
+
+    with pytest.raises(KeyboardInterrupt):
+        await run_daemon(**{k: v for k, v in deps.items() if k != "_bot"})
+
+    # 3 failures → backoff sleeps of 2, 4, 8 seconds
+    # Plus the normal 1-second sleep after the successful poll iteration
+    backoff_sleeps = [s for s in slept if s > 1]
+    assert backoff_sleeps == [2, 4, 8]

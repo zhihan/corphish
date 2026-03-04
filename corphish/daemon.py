@@ -11,6 +11,9 @@ from .claude_client import ClaudeClient
 
 logger = logging.getLogger(__name__)
 
+_BACKOFF_BASE = 1
+_BACKOFF_MAX = 60
+
 
 async def _poll_updates(bot: Bot, offset: int, timeout: int = 10):
     """Fetches new updates from Telegram starting after *offset*.
@@ -41,6 +44,9 @@ async def run_daemon(
     Fetches Telegram updates for the configured chat_id, sends each
     message through Claude, and replies with the response.
 
+    Uses exponential backoff on consecutive poll failures to avoid
+    tight error loops when the network is down.
+
     Args:
         get_token_fn: Returns the Telegram bot token.
         build_bot_fn: Builds a Bot from a token.
@@ -57,15 +63,23 @@ async def run_daemon(
     poll = poll_fn or _poll_updates
     client = claude or ClaudeClient()
     offset = 0
+    poll_backoff = 0
 
     logger.info("Daemon started, listening on chat %s", chat_id)
 
     while True:
         try:
             updates = await poll(bot, offset)
+            poll_backoff = 0
         except Exception:
             logger.exception("Failed to poll updates")
             updates = []
+            if not once:
+                poll_backoff = min(
+                    (poll_backoff or _BACKOFF_BASE) * 2, _BACKOFF_MAX
+                )
+                logger.info("Backing off for %ds before next poll", poll_backoff)
+                await asyncio.sleep(poll_backoff)
 
         for update in updates:
             offset = update.update_id + 1
@@ -81,11 +95,19 @@ async def run_daemon(
             try:
                 async with client.lock:
                     reply = await client.send(user_text)
+            except Exception:
+                logger.exception("Claude call failed for message: %s", user_text)
+                continue
 
-                logger.info("[assistant] %s", reply)
+            logger.info("[assistant] %s", reply)
+
+            try:
                 await send_message_fn(bot, chat_id, reply)
             except Exception:
-                logger.exception("Failed to process message: %s", user_text)
+                logger.exception(
+                    "Failed to send reply via Telegram for message: %s",
+                    user_text,
+                )
 
         if once:
             break
