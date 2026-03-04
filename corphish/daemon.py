@@ -103,6 +103,12 @@ async def run_daemon(
             except Exception:
                 logger.exception("Claude call failed for message: %s", user_text)
                 continue
+            except asyncio.CancelledError:
+                logger.warning(
+                    "Claude call cancelled (SDK cleanup leak) for message: %s",
+                    user_text,
+                )
+                continue
 
             logger.info("[assistant] %s", reply)
 
@@ -111,6 +117,11 @@ async def run_daemon(
             except Exception:
                 logger.exception(
                     "Failed to send reply via Telegram for message: %s",
+                    user_text,
+                )
+            except asyncio.CancelledError:
+                logger.warning(
+                    "send_message cancelled (SDK cleanup leak) for message: %s",
                     user_text,
                 )
 

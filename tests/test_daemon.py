@@ -301,3 +301,58 @@ async def test_daemon_persists_offset_even_when_claude_fails():
     await run_daemon(**{k: v for k, v in deps.items() if k != "_bot"})
 
     deps["save_offset_fn"].assert_called_once_with(301)
+
+
+# --- CancelledError resilience tests (issue #33) ---
+
+
+async def test_daemon_continues_after_send_message_cancelled_error():
+    """Regression #33: CancelledError on send_message must not crash the daemon."""
+    updates = [
+        _make_update(1, 42, "first"),
+        _make_update(2, 42, "second"),
+    ]
+    deps = _make_deps(chat_id=42, updates=updates)
+    deps["claude"].send = AsyncMock(side_effect=["r1", "r2"])
+    deps["send_message_fn"] = AsyncMock(
+        side_effect=[asyncio.CancelledError("cancel scope leak"), None]
+    )
+
+    await run_daemon(**{k: v for k, v in deps.items() if k != "_bot"})
+
+    # Both messages should be processed; the daemon must not exit
+    assert deps["claude"].send.await_count == 2
+    assert deps["send_message_fn"].await_count == 2
+
+
+async def test_daemon_continues_after_claude_cancelled_error():
+    """Regression #33: CancelledError from Claude SDK must not crash the daemon."""
+    updates = [
+        _make_update(1, 42, "boom"),
+        _make_update(2, 42, "ok"),
+    ]
+    deps = _make_deps(chat_id=42, updates=updates)
+    deps["claude"].send = AsyncMock(
+        side_effect=[asyncio.CancelledError("cancel scope leak"), "reply-ok"]
+    )
+
+    await run_daemon(**{k: v for k, v in deps.items() if k != "_bot"})
+
+    assert deps["claude"].send.await_count == 2
+    # First message's send_message should be skipped; only second succeeds
+    deps["send_message_fn"].assert_awaited_once_with(deps["_bot"], 42, "reply-ok")
+
+
+async def test_daemon_logs_cancelled_error_on_send(caplog):
+    """CancelledError on send_message should be logged as a warning, not crash."""
+    updates = [_make_update(1, 42, "hi")]
+    deps = _make_deps(chat_id=42, updates=[_make_update(1, 42, "hi")])
+    deps["claude"].send = AsyncMock(return_value="reply")
+    deps["send_message_fn"] = AsyncMock(
+        side_effect=asyncio.CancelledError("cancel scope leak")
+    )
+
+    with caplog.at_level(logging.WARNING):
+        await run_daemon(**{k: v for k, v in deps.items() if k != "_bot"})
+
+    assert any("send_message cancelled" in r.message for r in caplog.records)

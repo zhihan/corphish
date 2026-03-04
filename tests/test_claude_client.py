@@ -455,3 +455,43 @@ async def test_send_closes_generator_on_normal_exhaustion():
     result = await client.send("test")
     assert result == "hello"
     assert closed, "async generator was not properly closed"
+
+
+# ---------------------------------------------------------------------------
+# send() — cancel scope cleanup mitigation (issue #33)
+# ---------------------------------------------------------------------------
+
+
+async def test_send_yields_control_after_stream(monkeypatch):
+    """Regression #33: send() must await asyncio.sleep(0) after the stream
+    closes so any leaked cancel-scope cleanup settles before the caller
+    does further I/O.
+    """
+    from claude_agent_sdk import AssistantMessage, TextBlock, ResultMessage
+
+    sleep_called_with = []
+    original_sleep = asyncio.sleep
+
+    async def spy_sleep(seconds, *args, **kwargs):
+        sleep_called_with.append(seconds)
+        return await original_sleep(seconds, *args, **kwargs)
+
+    monkeypatch.setattr("corphish.claude_client.asyncio.sleep", spy_sleep)
+
+    messages = [
+        AssistantMessage(content=[TextBlock(text="hi")], model="test"),
+        ResultMessage(
+            subtype="success",
+            duration_ms=100,
+            duration_api_ms=80,
+            is_error=False,
+            num_turns=1,
+            session_id="s1",
+        ),
+    ]
+    client = _make_client(query_fn=_make_query_fn(messages))
+    result = await client.send("test")
+    assert result == "hi"
+    assert 0 in sleep_called_with, (
+        "asyncio.sleep(0) was not called after stream closed"
+    )
