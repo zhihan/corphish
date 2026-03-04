@@ -74,11 +74,14 @@ async def run_daemon(
             user_text = update.message.text
             logger.info("[user] %s", user_text)
 
-            async with client.lock:
-                reply = await client.send(user_text)
+            try:
+                async with client.lock:
+                    reply = await client.send(user_text)
 
-            logger.info("[assistant] %s", reply)
-            await send_message_fn(bot, chat_id, reply)
+                logger.info("[assistant] %s", reply)
+                await send_message_fn(bot, chat_id, reply)
+            except Exception:
+                logger.exception("Failed to process message: %s", user_text)
 
         if once:
             break

@@ -5,7 +5,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from corphish.cli import build_parser, cmd_run_once, cmd_send, cmd_status, dispatch
+from corphish.cli import (
+    build_parser,
+    cmd_clear_history,
+    cmd_run_once,
+    cmd_send,
+    cmd_status,
+    dispatch,
+)
 
 
 # --- Parser tests ---
@@ -60,6 +67,11 @@ class TestBuildParser:
         parser = build_parser()
         args = parser.parse_args(["status"])
         assert args.command == "status"
+
+    def test_clear_history_command(self):
+        parser = build_parser()
+        args = parser.parse_args(["clear_history"])
+        assert args.command == "clear_history"
 
     def test_no_command_defaults_to_none(self):
         parser = build_parser()
@@ -316,3 +328,32 @@ class TestDispatch:
             await dispatch(args)
             mock_boot.assert_awaited_once()
             mock_daemon.assert_not_awaited()
+
+    async def test_dispatch_clear_history(self):
+        parser = build_parser()
+        args = parser.parse_args(["clear_history"])
+
+        with patch("corphish.cli.cmd_clear_history") as mock_clear:
+            await dispatch(args)
+            mock_clear.assert_called_once()
+
+
+# --- cmd_clear_history tests ---
+
+
+class TestCmdClearHistory:
+    def test_deletes_existing_file(self, tmp_path):
+        hp = tmp_path / "history.json"
+        hp.write_text("[]")
+
+        cmd_clear_history(history_path_fn=lambda: hp)
+
+        assert not hp.exists()
+
+    def test_handles_missing_file(self, tmp_path):
+        hp = tmp_path / "history.json"
+
+        # Should not raise
+        cmd_clear_history(history_path_fn=lambda: hp)
+
+        assert not hp.exists()

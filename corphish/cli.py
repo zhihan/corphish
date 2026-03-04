@@ -42,6 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_once_parser.add_argument("text", nargs="+", help="Message text to send")
 
     sub.add_parser("status", help="Show current configuration status")
+    sub.add_parser("clear_history", help="Delete conversation history")
 
     return parser
 
@@ -145,6 +146,24 @@ def cmd_status(
         out("Status: not bootstrapped")
 
 
+def cmd_clear_history(
+    *,
+    history_path_fn: Optional[Callable[[], Path]] = None,
+) -> None:
+    """Deletes the conversation history file.
+
+    Args:
+        history_path_fn: Returns the path to history.json.
+            Defaults to ``config.get_config_dir() / "history.json"``.
+    """
+    path = (history_path_fn or (lambda: config.get_config_dir() / "history.json"))()
+    if path.exists():
+        path.unlink()
+        logger.info("History cleared: %s", path)
+    else:
+        logger.info("No history to clear.")
+
+
 async def dispatch(args: argparse.Namespace) -> None:
     """Dispatches to the appropriate command handler.
 
@@ -164,6 +183,8 @@ async def dispatch(args: argparse.Namespace) -> None:
         await run_bootstrap()
     elif command == "status":
         cmd_status()
+    elif command == "clear_history":
+        cmd_clear_history()
     else:
         # Default: run daemon (auto-bootstrap on first run)
         if config.is_first_run():

@@ -1,5 +1,6 @@
 """Tests for corphish.daemon."""
 
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -130,3 +131,41 @@ async def test_daemon_filters_mixed_chat_ids():
     calls = deps["claude"].send.call_args_list
     assert calls[0].args[0] == "good"
     assert calls[1].args[0] == "also good"
+
+
+async def test_daemon_continues_after_send_failure():
+    """The daemon should log errors and keep processing, not crash."""
+    updates = [
+        _make_update(1, 42, "boom"),
+        _make_update(2, 42, "ok"),
+    ]
+    deps = _make_deps(chat_id=42, updates=updates)
+    deps["claude"].send = AsyncMock(
+        side_effect=[RuntimeError("API down"), "reply-ok"]
+    )
+
+    await run_daemon(**{k: v for k, v in deps.items() if k != "_bot"})
+
+    # First message failed, second succeeded
+    assert deps["claude"].send.await_count == 2
+    deps["send_message_fn"].assert_awaited_once_with(
+        deps["_bot"], 42, "reply-ok"
+    )
+
+
+async def test_daemon_continues_after_telegram_send_failure():
+    """If Telegram send fails, the loop should continue."""
+    updates = [
+        _make_update(1, 42, "first"),
+        _make_update(2, 42, "second"),
+    ]
+    deps = _make_deps(chat_id=42, updates=updates)
+    deps["claude"].send = AsyncMock(side_effect=["r1", "r2"])
+    deps["send_message_fn"] = AsyncMock(
+        side_effect=[RuntimeError("Telegram timeout"), None]
+    )
+
+    await run_daemon(**{k: v for k, v in deps.items() if k != "_bot"})
+
+    assert deps["claude"].send.await_count == 2
+    assert deps["send_message_fn"].await_count == 2
