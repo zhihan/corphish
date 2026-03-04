@@ -42,6 +42,10 @@ def build_parser() -> argparse.ArgumentParser:
     run_once_parser.add_argument("text", nargs="+", help="Message text to send")
 
     sub.add_parser("status", help="Show current configuration status")
+    sub.add_parser(
+        "skip-updates",
+        help="Advance offset past all pending Telegram updates",
+    )
     return parser
 
 
@@ -144,6 +148,39 @@ def cmd_status(
         out("Status: not bootstrapped")
 
 
+async def cmd_skip_updates(
+    *,
+    get_bot_token_fn: Callable = get_bot_token,
+    build_bot_fn: Callable = build_bot,
+    save_offset_fn: Callable = config.save_update_offset,
+) -> None:
+    """Advances the update offset past all pending Telegram updates.
+
+    Calls getUpdates with offset=-1 to fetch only the latest update,
+    then persists max(update_id) + 1 so the daemon will skip everything
+    currently queued.
+
+    Args:
+        get_bot_token_fn: Returns the Telegram bot token.
+        build_bot_fn: Creates a Bot from a token.
+        save_offset_fn: Persists the update offset.
+    """
+    try:
+        token = get_bot_token_fn()
+    except RuntimeError as exc:
+        logger.error("%s", exc)
+        sys.exit(1)
+
+    bot = build_bot_fn(token)
+    updates = await bot.get_updates(offset=-1, timeout=0)
+    if updates:
+        new_offset = updates[-1].update_id + 1
+        save_offset_fn(new_offset)
+        logger.info("Skipped updates. Offset set to %d.", new_offset)
+    else:
+        logger.info("No pending updates to skip.")
+
+
 async def dispatch(args: argparse.Namespace) -> None:
     """Dispatches to the appropriate command handler.
 
@@ -163,6 +200,8 @@ async def dispatch(args: argparse.Namespace) -> None:
         await run_bootstrap()
     elif command == "status":
         cmd_status()
+    elif command == "skip-updates":
+        await cmd_skip_updates()
     else:
         # Default: run daemon (auto-bootstrap on first run)
         if config.is_first_run():

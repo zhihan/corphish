@@ -75,3 +75,33 @@ def test_is_first_run_true_when_config_exists_but_no_chat_id(tmp_path, monkeypat
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     config.save_config({"heartbeat": {"interval_minutes": 30}})
     assert config.is_first_run() is True
+
+
+# --- Update offset tests ---
+
+
+def test_get_update_offset_default(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    assert config.get_update_offset() == 0
+
+
+def test_get_update_offset_after_save(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    config.save_update_offset(42)
+    assert config.get_update_offset() == 42
+
+
+def test_save_update_offset_preserves_other_keys(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    config.save_config({"chat_id": 123})
+    config.save_update_offset(99)
+    cfg = config.load_config()
+    assert cfg["chat_id"] == 123
+    assert cfg["last_update_id"] == 99
+
+
+def test_save_update_offset_overwrites_previous(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    config.save_update_offset(10)
+    config.save_update_offset(20)
+    assert config.get_update_offset() == 20

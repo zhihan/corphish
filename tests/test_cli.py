@@ -9,6 +9,7 @@ from corphish.cli import (
     build_parser,
     cmd_run_once,
     cmd_send,
+    cmd_skip_updates,
     cmd_status,
     dispatch,
 )
@@ -322,4 +323,70 @@ class TestDispatch:
             await dispatch(args)
             mock_boot.assert_awaited_once()
             mock_daemon.assert_not_awaited()
+
+    async def test_dispatch_skip_updates(self):
+        parser = build_parser()
+        args = parser.parse_args(["skip-updates"])
+
+        with patch(
+            "corphish.cli.cmd_skip_updates", new_callable=AsyncMock
+        ) as mock_skip:
+            await dispatch(args)
+            mock_skip.assert_awaited_once()
+
+
+# --- Parser: skip-updates ---
+
+
+class TestBuildParserSkipUpdates:
+    def test_skip_updates_command(self):
+        parser = build_parser()
+        args = parser.parse_args(["skip-updates"])
+        assert args.command == "skip-updates"
+
+
+# --- cmd_skip_updates tests ---
+
+
+class TestCmdSkipUpdates:
+    async def test_skip_updates_advances_offset(self):
+        mock_bot = MagicMock()
+        update = MagicMock()
+        update.update_id = 500
+        mock_bot.get_updates = AsyncMock(return_value=[update])
+        save_fn = MagicMock()
+
+        await cmd_skip_updates(
+            get_bot_token_fn=lambda: "fake-token",
+            build_bot_fn=lambda token: mock_bot,
+            save_offset_fn=save_fn,
+        )
+
+        mock_bot.get_updates.assert_awaited_once_with(offset=-1, timeout=0)
+        save_fn.assert_called_once_with(501)
+
+    async def test_skip_updates_no_pending(self):
+        mock_bot = MagicMock()
+        mock_bot.get_updates = AsyncMock(return_value=[])
+        save_fn = MagicMock()
+
+        await cmd_skip_updates(
+            get_bot_token_fn=lambda: "fake-token",
+            build_bot_fn=lambda token: mock_bot,
+            save_offset_fn=save_fn,
+        )
+
+        save_fn.assert_not_called()
+
+    async def test_skip_updates_exits_if_no_token(self):
+        def raise_runtime():
+            raise RuntimeError("TELEGRAM_BOT_TOKEN not set")
+
+        with pytest.raises(SystemExit) as exc_info:
+            await cmd_skip_updates(
+                get_bot_token_fn=raise_runtime,
+                build_bot_fn=lambda token: MagicMock(),
+                save_offset_fn=MagicMock(),
+            )
+        assert exc_info.value.code == 1
 

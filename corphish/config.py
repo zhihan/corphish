@@ -69,6 +69,24 @@ def save_config(data: dict) -> None:
     tmp_path.replace(config_path)
 
 
+def get_update_offset() -> int:
+    """Returns the persisted Telegram update offset.
+
+    Returns:
+        The last_update_id value from config, or 0 if not set.
+    """
+    return load_config().get("last_update_id", 0)
+
+
+def save_update_offset(offset: int) -> None:
+    """Persists the Telegram update offset to config.
+
+    Args:
+        offset: The update_id + 1 to resume from on next poll.
+    """
+    save_config({"last_update_id": offset})
+
+
 def is_first_run() -> bool:
     """Returns True if no Telegram chat has been configured yet.
 
