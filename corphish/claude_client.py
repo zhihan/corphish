@@ -140,4 +140,10 @@ class ClaudeClient:
                     if message.result:
                         return message.result
 
+        # Yield control so any pending anyio cancel-scope cleanup from the
+        # SDK's internal task group settles before the caller does further I/O.
+        # Without this, a leaked cancellation can fire on the next await
+        # (e.g. send_message), causing CancelledError.  See issue #33.
+        await asyncio.sleep(0)
+
         return last_text
