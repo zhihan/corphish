@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from contextlib import aclosing
 from pathlib import Path
 from typing import Optional
 
@@ -123,19 +124,20 @@ class ClaudeClient:
         """
         last_text = ""
 
-        async for message in self._query(
-            prompt=user_text, options=self._options
-        ):
-            if isinstance(message, AssistantMessage):
-                parts = [
-                    block.text
-                    for block in message.content
-                    if isinstance(block, TextBlock)
-                ]
-                if parts:
-                    last_text = "\n".join(parts)
-            elif isinstance(message, ResultMessage):
-                if message.result:
-                    return message.result
+        async with aclosing(
+            self._query(prompt=user_text, options=self._options)
+        ) as stream:
+            async for message in stream:
+                if isinstance(message, AssistantMessage):
+                    parts = [
+                        block.text
+                        for block in message.content
+                        if isinstance(block, TextBlock)
+                    ]
+                    if parts:
+                        last_text = "\n".join(parts)
+                elif isinstance(message, ResultMessage):
+                    if message.result:
+                        return message.result
 
         return last_text

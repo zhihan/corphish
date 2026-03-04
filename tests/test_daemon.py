@@ -169,3 +169,15 @@ async def test_daemon_continues_after_telegram_send_failure():
 
     assert deps["claude"].send.await_count == 2
     assert deps["send_message_fn"].await_count == 2
+
+
+async def test_daemon_continues_after_poll_failure():
+    """If polling Telegram raises, the daemon should log and continue."""
+    deps = _make_deps(chat_id=42)
+    deps["poll_fn"] = AsyncMock(side_effect=RuntimeError("network error"))
+
+    await run_daemon(**{k: v for k, v in deps.items() if k != "_bot"})
+
+    # Should not crash — Claude and Telegram send should not be called
+    deps["claude"].send.assert_not_awaited()
+    deps["send_message_fn"].assert_not_awaited()

@@ -61,7 +61,11 @@ async def run_daemon(
     logger.info("Daemon started, listening on chat %s", chat_id)
 
     while True:
-        updates = await poll(bot, offset)
+        try:
+            updates = await poll(bot, offset)
+        except Exception:
+            logger.exception("Failed to poll updates")
+            updates = []
 
         for update in updates:
             offset = update.update_id + 1

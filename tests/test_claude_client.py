@@ -380,3 +380,78 @@ async def test_lock_serialises_calls():
         "start-a",
         "end-a",
     ]
+
+
+# ---------------------------------------------------------------------------
+# send() — async generator cleanup (issue #27)
+# ---------------------------------------------------------------------------
+
+
+async def test_send_closes_generator_on_early_return():
+    """Generator must be closed when send() returns via ResultMessage.result.
+
+    Regression test for issue #27: leaving the async generator open caused
+    RuntimeError (anyio cancel scope) when GC ran aclose() in a different task.
+    """
+    from claude_agent_sdk import AssistantMessage, TextBlock, ResultMessage
+
+    closed = False
+
+    async def gen_query(*, prompt, options):
+        nonlocal closed
+        try:
+            yield AssistantMessage(
+                content=[TextBlock(text="intermediate")], model="test"
+            )
+            yield ResultMessage(
+                subtype="success",
+                duration_ms=100,
+                duration_api_ms=80,
+                is_error=False,
+                num_turns=1,
+                session_id="s1",
+                result="final",
+            )
+            # This code would run if generator were not closed after early return
+            yield AssistantMessage(
+                content=[TextBlock(text="should not reach")], model="test"
+            )
+        except GeneratorExit:
+            closed = True
+            raise
+        finally:
+            closed = True
+
+    client = _make_client(query_fn=gen_query)
+    result = await client.send("test")
+    assert result == "final"
+    assert closed, "async generator was not properly closed"
+
+
+async def test_send_closes_generator_on_normal_exhaustion():
+    """Generator cleanup works on the normal (no early return) path too."""
+    from claude_agent_sdk import AssistantMessage, TextBlock, ResultMessage
+
+    closed = False
+
+    async def gen_query(*, prompt, options):
+        nonlocal closed
+        try:
+            yield AssistantMessage(
+                content=[TextBlock(text="hello")], model="test"
+            )
+            yield ResultMessage(
+                subtype="success",
+                duration_ms=100,
+                duration_api_ms=80,
+                is_error=False,
+                num_turns=1,
+                session_id="s1",
+            )
+        finally:
+            closed = True
+
+    client = _make_client(query_fn=gen_query)
+    result = await client.send("test")
+    assert result == "hello"
+    assert closed, "async generator was not properly closed"
