@@ -38,6 +38,8 @@ async def run_daemon(
     poll_fn: Optional[Callable] = None,
     claude: Optional[ClaudeClient] = None,
     once: bool = False,
+    get_offset_fn: Callable = config.get_update_offset,
+    save_offset_fn: Callable = config.save_update_offset,
 ) -> None:
     """Runs the main daemon polling loop.
 
@@ -55,6 +57,8 @@ async def run_daemon(
         poll_fn: Async callable(bot, offset) returning updates.
         claude: A ClaudeClient instance.
         once: If True, process one batch of updates and return (for testing).
+        get_offset_fn: Returns the persisted update offset.
+        save_offset_fn: Persists the update offset.
     """
     token = get_token_fn()
     bot = build_bot_fn(token)
@@ -62,7 +66,7 @@ async def run_daemon(
     chat_id = cfg["chat_id"]
     poll = poll_fn or _poll_updates
     client = claude or ClaudeClient()
-    offset = 0
+    offset = get_offset_fn()
     poll_backoff = 0
 
     logger.info("Daemon started, listening on chat %s", chat_id)
@@ -83,6 +87,7 @@ async def run_daemon(
 
         for update in updates:
             offset = update.update_id + 1
+            save_offset_fn(offset)
 
             if not update.message or not update.message.text:
                 continue
