@@ -356,3 +356,71 @@ async def test_daemon_logs_cancelled_error_on_send(caplog):
         await run_daemon(**{k: v for k, v in deps.items() if k != "_bot"})
 
     assert any("send_message cancelled" in r.message for r in caplog.records)
+
+
+# --- /reset command tests ---
+
+
+async def test_daemon_handles_reset_command():
+    """/reset command should reset the client and send confirmation."""
+    update = _make_update(1, 42, "/reset")
+    deps = _make_deps(chat_id=42, updates=[update])
+    deps["claude"].reset = MagicMock()
+
+    await run_daemon(**{k: v for k, v in deps.items() if k != "_bot"})
+
+    # reset() should be called
+    deps["claude"].reset.assert_called_once()
+    # Claude.send() should NOT be called (command handled internally)
+    deps["claude"].send.assert_not_awaited()
+    # Confirmation message should be sent
+    deps["send_message_fn"].assert_awaited_once()
+    sent_message = deps["send_message_fn"].call_args.args[2]
+    assert "reset" in sent_message.lower()
+    assert "context" in sent_message.lower() or "history" in sent_message.lower()
+
+
+async def test_daemon_handles_reset_command_with_whitespace():
+    """/reset with leading/trailing whitespace should still work."""
+    update = _make_update(1, 42, "  /reset  ")
+    deps = _make_deps(chat_id=42, updates=[update])
+    deps["claude"].reset = MagicMock()
+
+    await run_daemon(**{k: v for k, v in deps.items() if k != "_bot"})
+
+    deps["claude"].reset.assert_called_once()
+    deps["claude"].send.assert_not_awaited()
+
+
+async def test_daemon_normal_message_after_reset():
+    """/reset followed by a normal message should work correctly."""
+    updates = [
+        _make_update(1, 42, "/reset"),
+        _make_update(2, 42, "hello"),
+    ]
+    deps = _make_deps(chat_id=42, updates=updates)
+    deps["claude"].reset = MagicMock()
+    deps["claude"].send = AsyncMock(return_value="hi there")
+
+    await run_daemon(**{k: v for k, v in deps.items() if k != "_bot"})
+
+    # reset called once
+    deps["claude"].reset.assert_called_once()
+    # Claude.send() called once (for "hello")
+    deps["claude"].send.assert_awaited_once_with("hello")
+    # Two messages sent: reset confirmation + Claude's reply
+    assert deps["send_message_fn"].await_count == 2
+
+
+async def test_daemon_reset_does_not_match_partial():
+    """Message containing /reset but not starting with it should be sent to Claude."""
+    update = _make_update(1, 42, "How do I /reset my password?")
+    deps = _make_deps(chat_id=42, updates=[update])
+    deps["claude"].reset = MagicMock()
+
+    await run_daemon(**{k: v for k, v in deps.items() if k != "_bot"})
+
+    # Should not trigger reset
+    deps["claude"].reset.assert_not_called()
+    # Should be sent to Claude
+    deps["claude"].send.assert_awaited_once_with("How do I /reset my password?")

@@ -97,18 +97,28 @@ async def run_daemon(
             user_text = update.message.text
             logger.info("[user] %s", user_text)
 
-            try:
+            # Handle /reset command
+            if user_text.strip().startswith("/reset"):
                 async with client.lock:
-                    reply = await client.send(user_text)
-            except Exception:
-                logger.exception("Claude call failed for message: %s", user_text)
-                continue
-            except asyncio.CancelledError:
-                logger.warning(
-                    "Claude call cancelled (SDK cleanup leak) for message: %s",
-                    user_text,
+                    client.reset()
+                reply = (
+                    "Context and conversation history have been reset. "
+                    "Starting fresh while preserving any files created."
                 )
-                continue
+                logger.info("[system] Reset conversation")
+            else:
+                try:
+                    async with client.lock:
+                        reply = await client.send(user_text)
+                except Exception:
+                    logger.exception("Claude call failed for message: %s", user_text)
+                    continue
+                except asyncio.CancelledError:
+                    logger.warning(
+                        "Claude call cancelled (SDK cleanup leak) for message: %s",
+                        user_text,
+                    )
+                    continue
 
             logger.info("[assistant] %s", reply)
 
