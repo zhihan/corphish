@@ -388,11 +388,11 @@ async def test_lock_serialises_calls():
 
 
 async def test_send_closes_generator_on_early_return():
-    """send() must stop consuming after ResultMessage.result via break.
+    """send() must close the generator in the same task after breaking.
 
-    Regression test for issue #27: the generator is no longer wrapped in
-    aclosing(); instead we break out of the loop. The result must still be
-    correct and no messages after the break should affect the return value.
+    Regression test for issues #27 and #36: the generator is explicitly closed
+    via aclose() in the finally block so the SDK's cancel scope is torn down in
+    the originating task, not deferred to GC in a different task.
     """
     from claude_agent_sdk import AssistantMessage, TextBlock, ResultMessage
 
@@ -417,15 +417,13 @@ async def test_send_closes_generator_on_early_return():
             yield AssistantMessage(
                 content=[TextBlock(text="should not reach")], model="test"
             )
-        except GeneratorExit:
-            closed = True
-            raise
         finally:
             closed = True
 
     client = _make_client(query_fn=gen_query)
     result = await client.send("test")
     assert result == "final"
+    assert closed, "async generator was not closed after early break"
 
 
 async def test_send_closes_generator_on_normal_exhaustion():
