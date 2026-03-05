@@ -500,3 +500,87 @@ async def test_send_exhausts_generator_without_break():
         "ResultMessage",
         "AssistantMessage",
     ]
+
+
+# ---------------------------------------------------------------------------
+# reset() tests
+# ---------------------------------------------------------------------------
+
+
+def test_reset_recreates_options():
+    """reset() should create fresh options to clear conversation history."""
+    from claude_agent_sdk import ClaudeAgentOptions
+
+    client = _make_client(
+        options=ClaudeAgentOptions(
+            system_prompt={
+                "type": "preset",
+                "preset": "claude_code",
+                "append": "custom prompt",
+            },
+            model="claude-sonnet-4-5-20250929",
+            continue_conversation=True,
+        )
+    )
+    old_options = client._options
+
+    client.reset()
+
+    # Options should be recreated (new object)
+    assert client._options is not old_options
+    # But preserve the model and system prompt
+    assert client._options.model == "claude-sonnet-4-5-20250929"
+    assert client._options.system_prompt["type"] == "preset"
+    assert client._options.system_prompt["preset"] == "claude_code"
+    assert client._options.system_prompt["append"] == "custom prompt"
+
+
+def test_reset_preserves_model():
+    """reset() should preserve the model setting."""
+    from claude_agent_sdk import ClaudeAgentOptions
+
+    client = _make_client(
+        options=ClaudeAgentOptions(
+            system_prompt="test", model="claude-haiku-4-5-20251001"
+        )
+    )
+
+    client.reset()
+
+    assert client._options.model == "claude-haiku-4-5-20251001"
+
+
+async def test_reset_clears_conversation_history():
+    """After reset, send() should start a fresh conversation."""
+    from claude_agent_sdk import AssistantMessage, TextBlock, ResultMessage
+
+    call_count = 0
+
+    async def tracking_query(*, prompt, options):
+        nonlocal call_count
+        call_count += 1
+        yield AssistantMessage(
+            content=[TextBlock(text=f"response-{call_count}")], model="test"
+        )
+        yield ResultMessage(
+            subtype="success",
+            duration_ms=100,
+            duration_api_ms=80,
+            is_error=False,
+            num_turns=1,
+            session_id="s1",
+        )
+
+    client = _make_client(query_fn=tracking_query)
+
+    # First conversation
+    result1 = await client.send("hello")
+    assert result1 == "response-1"
+
+    # Reset
+    client.reset()
+
+    # Second conversation should be fresh (new options passed to query)
+    result2 = await client.send("hi again")
+    assert result2 == "response-2"
+    assert call_count == 2

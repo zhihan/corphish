@@ -107,6 +107,26 @@ class ClaudeClient:
         """Returns True if the lock is currently held."""
         return self.lock.locked()
 
+    def reset(self) -> None:
+        """Resets the conversation by recreating the options.
+
+        This clears the conversation history and starts fresh. Any markdown
+        files or other artifacts created during the conversation are preserved.
+        """
+        model = self._options.model or _DEFAULT_MODEL
+        system_prompt_config = self._options.system_prompt
+
+        # Extract the custom system prompt if it was appended to preset
+        custom_prompt = None
+        if isinstance(system_prompt_config, dict):
+            if system_prompt_config.get("type") == "preset":
+                custom_prompt = system_prompt_config.get("append")
+
+        self._options = _build_options(
+            model=model,
+            system_prompt=custom_prompt,
+        )
+
     async def send(self, user_text: str) -> str:
         """Sends a user message and returns Claude's final text response.
 
