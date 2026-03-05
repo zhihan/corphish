@@ -456,40 +456,47 @@ async def test_send_closes_generator_on_normal_exhaustion():
 
 
 # ---------------------------------------------------------------------------
-# send() — cancel scope cleanup mitigation (issue #33)
+# send() — cancel scope cleanup mitigation (issue #33 / #36)
 # ---------------------------------------------------------------------------
 
 
-async def test_send_yields_control_after_stream(monkeypatch):
-    """Regression #33: send() must await asyncio.sleep(0) after the stream
-    closes so any leaked cancel-scope cleanup settles before the caller
-    does further I/O.
+async def test_send_exhausts_generator_without_break():
+    """Regression #33/#36: send() must not break out of the generator early.
+
+    Breaking causes gen.aclose() which triggers the SDK's finally block in a
+    different task, crashing with 'Attempted to exit cancel scope in a
+    different task'.  Instead, send() should let the generator exhaust
+    naturally so cleanup runs in the same task.
     """
     from claude_agent_sdk import AssistantMessage, TextBlock, ResultMessage
 
-    sleep_called_with = []
-    original_sleep = asyncio.sleep
+    consumed = []
 
-    async def spy_sleep(seconds, *args, **kwargs):
-        sleep_called_with.append(seconds)
-        return await original_sleep(seconds, *args, **kwargs)
+    async def tracking_query(prompt, options):
+        messages = [
+            AssistantMessage(content=[TextBlock(text="hi")], model="test"),
+            ResultMessage(
+                subtype="success",
+                duration_ms=100,
+                duration_api_ms=80,
+                is_error=False,
+                num_turns=1,
+                session_id="s1",
+            ),
+            AssistantMessage(
+                content=[TextBlock(text="after-result")], model="test"
+            ),
+        ]
+        for msg in messages:
+            consumed.append(type(msg).__name__)
+            yield msg
 
-    monkeypatch.setattr("corphish.claude_client.asyncio.sleep", spy_sleep)
-
-    messages = [
-        AssistantMessage(content=[TextBlock(text="hi")], model="test"),
-        ResultMessage(
-            subtype="success",
-            duration_ms=100,
-            duration_api_ms=80,
-            is_error=False,
-            num_turns=1,
-            session_id="s1",
-        ),
-    ]
-    client = _make_client(query_fn=_make_query_fn(messages))
+    client = _make_client(query_fn=tracking_query)
     result = await client.send("test")
     assert result == "hi"
-    assert 0 in sleep_called_with, (
-        "asyncio.sleep(0) was not called after stream closed"
-    )
+    # All messages should be consumed — no early break
+    assert consumed == [
+        "AssistantMessage",
+        "ResultMessage",
+        "AssistantMessage",
+    ]

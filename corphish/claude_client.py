@@ -123,28 +123,24 @@ class ClaudeClient:
         """
         last_text = ""
         result_text = None
-        gen = self._query(prompt=user_text, options=self._options)
+        done = False
 
-        try:
-            async for message in gen:
-                if isinstance(message, AssistantMessage):
-                    parts = [
-                        block.text
-                        for block in message.content
-                        if isinstance(block, TextBlock)
-                    ]
-                    if parts:
-                        last_text = "\n".join(parts)
-                elif isinstance(message, ResultMessage):
-                    if message.result:
-                        result_text = message.result
-                        break
-        finally:
-            await gen.aclose()
-            # Yield control so any pending anyio cancel-scope cleanup from the
-            # SDK's internal task group settles before the caller does further
-            # I/O.  Without this, a leaked cancellation can fire on the next
-            # await (e.g. send_message), causing CancelledError.  See #33.
-            await asyncio.sleep(0)
+        async for message in self._query(
+            prompt=user_text, options=self._options
+        ):
+            if done:
+                continue
+            if isinstance(message, ResultMessage):
+                if message.result:
+                    result_text = message.result
+                done = True
+            elif isinstance(message, AssistantMessage):
+                parts = [
+                    block.text
+                    for block in message.content
+                    if isinstance(block, TextBlock)
+                ]
+                if parts:
+                    last_text = "\n".join(parts)
 
         return result_text or last_text
