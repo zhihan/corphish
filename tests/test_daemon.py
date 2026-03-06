@@ -45,12 +45,32 @@ def _make_consumer_deps(chat_id=42, updates=None, initial_offset=0):
     }
 
 
+def _make_stream_fn(*chunks):
+    """Returns an async generator function that yields the given chunks."""
+
+    async def _gen(text):
+        for chunk in chunks:
+            yield chunk
+
+    return _gen
+
+
+def _make_failing_stream_fn(exc):
+    """Returns an async generator function that raises exc immediately."""
+
+    async def _gen(text):
+        raise exc
+        yield  # make it an async generator
+
+    return _gen
+
+
 def _make_processor_deps(chat_id=42):
     """Returns a dict of mock dependencies for run_message_processor."""
     mock_bot = MagicMock()
     mock_claude = MagicMock()
     mock_claude.lock = __import__("asyncio").Lock()
-    mock_claude.send = AsyncMock(return_value="claude says hi")
+    mock_claude.stream = _make_stream_fn("claude says hi")
 
     mock_sent_message = MagicMock()
     mock_sent_message.message_id = 999
@@ -118,7 +138,7 @@ async def test_consumer_ignores_updates_without_text():
 
 
 async def test_processor_processes_message_with_claude():
-    """Processor should send messages to Claude and insert responses."""
+    """Processor should stream messages through Claude and send each chunk."""
     message = {
         "id": 1,
         "text": "hello",
@@ -127,16 +147,37 @@ async def test_processor_processes_message_with_claude():
         "created_at": "2024-01-01T00:00:00Z",
     }
     deps = _make_processor_deps(chat_id=42)
-    # Return message once, then None to avoid infinite loop
     deps["get_next_unprocessed_fn"] = AsyncMock(side_effect=[message, None])
 
     await run_message_processor(**{k: v for k, v in deps.items() if k != "_bot"})
 
-    deps["claude"].send.assert_awaited_once_with("hello")
     deps["mark_processed_fn"].assert_awaited_once_with(1, db_path=None)
     deps["insert_outgoing_fn"].assert_awaited_once_with(
         text="claude says hi", db_path=None
     )
+    deps["send_message_fn"].assert_awaited_once_with(deps["_bot"], 42, "claude says hi")
+    deps["mark_outgoing_sent_fn"].assert_awaited_once_with(1, 999, db_path=None)
+
+
+async def test_processor_streams_multiple_chunks():
+    """Processor should send each chunk to Telegram individually."""
+    message = {
+        "id": 1,
+        "text": "hello",
+        "telegram_update_id": 1,
+        "telegram_message_id": 10,
+        "created_at": "2024-01-01T00:00:00Z",
+    }
+    deps = _make_processor_deps(chat_id=42)
+    deps["claude"].stream = _make_stream_fn("chunk one", "chunk two")
+    deps["insert_outgoing_fn"] = AsyncMock(side_effect=[1, 2])
+    deps["get_next_unprocessed_fn"] = AsyncMock(side_effect=[message, None])
+
+    await run_message_processor(**{k: v for k, v in deps.items() if k != "_bot"})
+
+    assert deps["insert_outgoing_fn"].await_count == 2
+    assert deps["send_message_fn"].await_count == 2
+    assert deps["mark_outgoing_sent_fn"].await_count == 2
 
 
 async def test_processor_sends_outgoing_messages():
@@ -168,7 +209,6 @@ async def test_processor_handles_reset_command():
     await run_message_processor(**{k: v for k, v in deps.items() if k != "_bot"})
 
     deps["claude"].reset.assert_called_once()
-    deps["claude"].send.assert_not_awaited()
     deps["mark_processed_fn"].assert_awaited_once()
     deps["insert_outgoing_fn"].assert_awaited_once()
     # Check that confirmation message was inserted
@@ -177,7 +217,7 @@ async def test_processor_handles_reset_command():
 
 
 async def test_processor_continues_after_claude_failure():
-    """Processor should mark message as processed even if Claude fails."""
+    """Processor should mark message as processed even if Claude streaming fails."""
     message = {
         "id": 1,
         "text": "boom",
@@ -186,9 +226,8 @@ async def test_processor_continues_after_claude_failure():
         "created_at": "2024-01-01T00:00:00Z",
     }
     deps = _make_processor_deps(chat_id=42)
-    # Return message once, then None to avoid infinite loop
     deps["get_next_unprocessed_fn"] = AsyncMock(side_effect=[message, None])
-    deps["claude"].send = AsyncMock(side_effect=RuntimeError("API down"))
+    deps["claude"].stream = _make_failing_stream_fn(RuntimeError("API down"))
 
     await run_message_processor(**{k: v for k, v in deps.items() if k != "_bot"})
 

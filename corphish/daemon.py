@@ -180,34 +180,58 @@ async def run_message_processor(
             if user_text.strip().startswith("/reset"):
                 async with client.lock:
                     client.reset()
-                reply = (
-                    "Context and conversation history have been reset. "
-                    "Starting fresh while preserving any files created."
-                )
                 logger.info("[system] Reset conversation")
+                await mark_processed_fn(message["id"], db_path=db_path)
+                await insert_outgoing_fn(
+                    text=(
+                        "Context and conversation history have been reset. "
+                        "Starting fresh while preserving any files created."
+                    ),
+                    db_path=db_path,
+                )
             else:
                 try:
                     async with client.lock:
-                        reply = await client.send(user_text)
+                        async for chunk in client.stream(user_text):
+                            logger.info("[assistant] %s", chunk[:50])
+                            try:
+                                outgoing_id = await insert_outgoing_fn(
+                                    text=chunk, db_path=db_path
+                                )
+                            except Exception:
+                                logger.exception("Failed to insert outgoing chunk")
+                                continue
+                            try:
+                                sent_message = await send_message_fn(
+                                    bot, chat_id, chunk
+                                )
+                                await mark_outgoing_sent_fn(
+                                    outgoing_id,
+                                    sent_message.message_id,
+                                    db_path=db_path,
+                                )
+                            except Exception:
+                                logger.exception(
+                                    "Failed to send chunk via Telegram"
+                                )
+                            except asyncio.CancelledError:
+                                logger.warning(
+                                    "send_message cancelled (SDK cleanup leak)"
+                                )
                 except Exception:
-                    logger.exception("Claude call failed for message: %s", user_text)
+                    logger.exception(
+                        "Claude streaming failed for message: %s", user_text
+                    )
                     await mark_processed_fn(message["id"], db_path=db_path)
                     continue
                 except asyncio.CancelledError:
                     logger.warning(
-                        "Claude call cancelled (SDK cleanup leak) for message: %s",
-                        user_text,
+                        "Claude streaming cancelled for message: %s", user_text
                     )
                     await mark_processed_fn(message["id"], db_path=db_path)
                     continue
 
-            logger.info("[assistant] %s", reply[:50])
-
-            # Mark incoming message as processed
-            await mark_processed_fn(message["id"], db_path=db_path)
-
-            # Insert outgoing message to database
-            await insert_outgoing_fn(text=reply, db_path=db_path)
+                await mark_processed_fn(message["id"], db_path=db_path)
 
         # Send any unsent outgoing messages
         outgoing = await get_unsent_outgoing_fn(db_path=db_path)

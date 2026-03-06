@@ -503,6 +503,106 @@ async def test_send_exhausts_generator_without_break():
 
 
 # ---------------------------------------------------------------------------
+# stream() tests
+# ---------------------------------------------------------------------------
+
+
+async def test_stream_yields_text_chunks():
+    """stream() yields text from AssistantMessage blocks as they arrive."""
+    from claude_agent_sdk import AssistantMessage, TextBlock, ResultMessage
+
+    messages = [
+        AssistantMessage(content=[TextBlock(text="First chunk")], model="test"),
+        AssistantMessage(content=[TextBlock(text="Second chunk")], model="test"),
+        ResultMessage(
+            subtype="success",
+            duration_ms=100,
+            duration_api_ms=80,
+            is_error=False,
+            num_turns=2,
+            session_id="s1",
+        ),
+    ]
+    client = _make_client(query_fn=_make_query_fn(messages))
+    chunks = [chunk async for chunk in client.stream("hello")]
+    assert chunks == ["First chunk", "Second chunk"]
+
+
+async def test_stream_skips_messages_after_result():
+    """stream() stops yielding after ResultMessage (but exhausts the generator)."""
+    from claude_agent_sdk import AssistantMessage, TextBlock, ResultMessage
+
+    messages = [
+        AssistantMessage(content=[TextBlock(text="before result")], model="test"),
+        ResultMessage(
+            subtype="success",
+            duration_ms=100,
+            duration_api_ms=80,
+            is_error=False,
+            num_turns=1,
+            session_id="s1",
+        ),
+        AssistantMessage(content=[TextBlock(text="after result")], model="test"),
+    ]
+    client = _make_client(query_fn=_make_query_fn(messages))
+    chunks = [chunk async for chunk in client.stream("hello")]
+    assert chunks == ["before result"]
+
+
+async def test_stream_skips_non_text_blocks():
+    """stream() ignores AssistantMessages that contain only tool use blocks."""
+    from claude_agent_sdk import AssistantMessage, TextBlock, ToolUseBlock, ResultMessage
+
+    messages = [
+        AssistantMessage(
+            content=[ToolUseBlock(id="t1", name="Bash", input={"command": "ls"})],
+            model="test",
+        ),
+        AssistantMessage(content=[TextBlock(text="done")], model="test"),
+        ResultMessage(
+            subtype="success",
+            duration_ms=100,
+            duration_api_ms=80,
+            is_error=False,
+            num_turns=2,
+            session_id="s1",
+        ),
+    ]
+    client = _make_client(query_fn=_make_query_fn(messages))
+    chunks = [chunk async for chunk in client.stream("do it")]
+    assert chunks == ["done"]
+
+
+async def test_stream_exhausts_generator():
+    """stream() consumes all messages even after ResultMessage (cancel-scope safety)."""
+    from claude_agent_sdk import AssistantMessage, TextBlock, ResultMessage
+
+    consumed = []
+
+    async def tracking_query(*, prompt, options):
+        msgs = [
+            AssistantMessage(content=[TextBlock(text="hi")], model="test"),
+            ResultMessage(
+                subtype="success",
+                duration_ms=100,
+                duration_api_ms=80,
+                is_error=False,
+                num_turns=1,
+                session_id="s1",
+            ),
+            AssistantMessage(content=[TextBlock(text="after-result")], model="test"),
+        ]
+        for m in msgs:
+            consumed.append(type(m).__name__)
+            yield m
+
+    client = _make_client(query_fn=tracking_query)
+    chunks = [chunk async for chunk in client.stream("test")]
+    assert chunks == ["hi"]
+    assert consumed == ["AssistantMessage", "ResultMessage", "AssistantMessage"]
+
+
+# ---------------------------------------------------------------------------
 # reset() tests
 # ---------------------------------------------------------------------------
 
