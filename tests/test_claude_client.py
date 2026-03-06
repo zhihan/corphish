@@ -138,6 +138,15 @@ def test_build_options_enables_continue_conversation():
     assert opts.continue_conversation is True
 
 
+def test_build_options_enables_auto_compaction():
+    import json
+
+    opts = _build_options(system_prompt="test")
+    assert opts.settings is not None
+    settings = json.loads(opts.settings)
+    assert settings.get("autoCompact") is True
+
+
 # ---------------------------------------------------------------------------
 # Client construction tests
 # ---------------------------------------------------------------------------

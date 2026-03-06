@@ -65,6 +65,7 @@ def _build_options(
         model=model,
         continue_conversation=True,
         cwd=str(config.get_config_dir()),
+        settings='{"autoCompact": true}',
     )
 
 
