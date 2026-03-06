@@ -127,6 +127,35 @@ class ClaudeClient:
             system_prompt=custom_prompt,
         )
 
+    async def stream(self, user_text: str):
+        """Streams Claude's text response as chunks arrive.
+
+        Yields text from each AssistantMessage as Claude produces it rather
+        than waiting for the complete response.  The inner query generator is
+        always fully consumed so that the SDK's cancel scope is torn down in
+        the originating task (same fix as send()).
+
+        Args:
+            user_text: The message from the user.
+
+        Yields:
+            Text chunks from Claude's AssistantMessage blocks.
+        """
+        done = False
+        async for message in self._query(prompt=user_text, options=self._options):
+            if done:
+                continue
+            if isinstance(message, ResultMessage):
+                done = True
+            elif isinstance(message, AssistantMessage):
+                parts = [
+                    block.text
+                    for block in message.content
+                    if isinstance(block, TextBlock)
+                ]
+                if parts:
+                    yield "\n".join(parts)
+
     async def send(self, user_text: str) -> str:
         """Sends a user message and returns Claude's final text response.
 
