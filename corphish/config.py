@@ -94,3 +94,25 @@ def is_first_run() -> bool:
         True if chat_id is absent from config, False otherwise.
     """
     return "chat_id" not in load_config()
+
+
+# Default heartbeat interval: 30 minutes in seconds
+_DEFAULT_HEARTBEAT_INTERVAL = 30 * 60
+
+
+def get_heartbeat_interval() -> int:
+    """Returns the heartbeat interval in seconds.
+
+    Returns:
+        The heartbeat_interval value from config, or 1800 (30 minutes) if not set.
+    """
+    return load_config().get("heartbeat_interval", _DEFAULT_HEARTBEAT_INTERVAL)
+
+
+def save_heartbeat_interval(interval: int) -> None:
+    """Persists the heartbeat interval to config.
+
+    Args:
+        interval: The heartbeat interval in seconds.
+    """
+    save_config({"heartbeat_interval": interval})

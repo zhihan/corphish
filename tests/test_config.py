@@ -105,3 +105,34 @@ def test_save_update_offset_overwrites_previous(tmp_path, monkeypatch):
     config.save_update_offset(10)
     config.save_update_offset(20)
     assert config.get_update_offset() == 20
+
+
+# --- Heartbeat interval tests ---
+
+
+def test_get_heartbeat_interval_default(tmp_path, monkeypatch):
+    """Default heartbeat interval should be 30 minutes (1800 seconds)."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    assert config.get_heartbeat_interval() == 1800
+
+
+def test_get_heartbeat_interval_after_save(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    config.save_heartbeat_interval(900)  # 15 minutes
+    assert config.get_heartbeat_interval() == 900
+
+
+def test_save_heartbeat_interval_preserves_other_keys(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    config.save_config({"chat_id": 123})
+    config.save_heartbeat_interval(600)
+    cfg = config.load_config()
+    assert cfg["chat_id"] == 123
+    assert cfg["heartbeat_interval"] == 600
+
+
+def test_save_heartbeat_interval_overwrites_previous(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    config.save_heartbeat_interval(1800)
+    config.save_heartbeat_interval(3600)
+    assert config.get_heartbeat_interval() == 3600

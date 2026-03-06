@@ -1,4 +1,4 @@
-"""Daemon components: message consumer, processor, and integration via SQLite."""
+"""Daemon components: message consumer, processor, heartbeat, and integration via SQLite."""
 
 import asyncio
 import logging
@@ -14,6 +14,21 @@ logger = logging.getLogger(__name__)
 
 _BACKOFF_BASE = 1
 _BACKOFF_MAX = 60
+
+
+def _load_heartbeat_prompt() -> str:
+    """Loads the heartbeat prompt from HEARTBEAT.md.
+
+    Returns:
+        The contents of HEARTBEAT.md, or a minimal fallback.
+    """
+    heartbeat_path = Path(__file__).parent.parent / "HEARTBEAT.md"
+    if heartbeat_path.exists():
+        return heartbeat_path.read_text()
+    return (
+        "This is a periodic heartbeat. Decide if there is anything worth "
+        "saying to the user unprompted. Default to silence."
+    )
 
 
 async def _poll_updates(bot: Bot, offset: int, timeout: int = 10):
@@ -213,6 +228,100 @@ async def run_message_processor(
         await asyncio.sleep(1)
 
 
+def _is_trivial_response(response: str) -> bool:
+    """Determines if a heartbeat response is trivial and should be suppressed.
+
+    A response is trivial if it's empty, just whitespace, or explicitly
+    indicates the assistant chose to stay silent.
+
+    Args:
+        response: The response text from Claude.
+
+    Returns:
+        True if the response should be suppressed, False if it should be sent.
+    """
+    if not response or not response.strip():
+        return True
+
+    # Common patterns indicating intentional silence
+    lowered = response.lower().strip()
+    trivial_patterns = [
+        "no message",
+        "nothing to say",
+        "staying silent",
+        "stay silent",
+        "no response",
+        "no update",
+        "silence",
+    ]
+    return any(pattern in lowered for pattern in trivial_patterns)
+
+
+async def run_heartbeat_runner(
+    *,
+    claude: ClaudeClient,
+    once: bool = False,
+    db_path: Optional[Path] = None,
+    insert_outgoing_fn: Callable = db.insert_outgoing_message,
+    get_interval_fn: Callable = config.get_heartbeat_interval,
+    load_prompt_fn: Callable = _load_heartbeat_prompt,
+) -> None:
+    """Runs the heartbeat runner loop.
+
+    Fires at configurable intervals (default 30 minutes) and sends a check-in
+    prompt to Claude. Only surfaces meaningful responses to users. Skips
+    execution if Claude is currently busy processing a message.
+
+    Args:
+        claude: A ClaudeClient instance (shared with processor for lock check).
+        once: If True, fire once and return (for testing).
+        db_path: Path to the database file.
+        insert_outgoing_fn: Function to insert outgoing message.
+        get_interval_fn: Function to get heartbeat interval in seconds.
+        load_prompt_fn: Function to load the heartbeat prompt.
+    """
+    prompt = load_prompt_fn()
+    logger.info("Heartbeat runner started")
+
+    while True:
+        interval = get_interval_fn()
+        logger.debug("Heartbeat sleeping for %d seconds", interval)
+        await asyncio.sleep(interval)
+
+        # Skip if Claude is busy processing a message
+        if claude.busy:
+            logger.info("[heartbeat] Skipping — Claude is busy")
+            if once:
+                break
+            continue
+
+        logger.info("[heartbeat] Firing heartbeat check-in")
+
+        try:
+            async with claude.lock:
+                response = await claude.send(prompt)
+        except Exception:
+            logger.exception("Heartbeat Claude call failed")
+            if once:
+                break
+            continue
+        except asyncio.CancelledError:
+            logger.warning("Heartbeat Claude call cancelled")
+            if once:
+                break
+            continue
+
+        # Only surface non-trivial responses
+        if _is_trivial_response(response):
+            logger.info("[heartbeat] Response was trivial, suppressing")
+        else:
+            logger.info("[heartbeat] Sending response: %s", response[:50])
+            await insert_outgoing_fn(text=response, db_path=db_path)
+
+        if once:
+            break
+
+
 async def run_daemon(
     *,
     get_token_fn: Callable = chat.get_bot_token,
@@ -225,12 +334,13 @@ async def run_daemon(
     get_offset_fn: Callable = config.get_update_offset,
     save_offset_fn: Callable = config.save_update_offset,
     db_path: Optional[Path] = None,
+    enable_heartbeat: bool = True,
 ) -> None:
-    """Runs both message consumer and processor concurrently.
+    """Runs message consumer, processor, and heartbeat runner concurrently.
 
-    This is the main entry point that starts both the message consumer
-    (polls Telegram) and message processor (polls DB, processes via Claude)
-    loops concurrently.
+    This is the main entry point that starts the message consumer
+    (polls Telegram), message processor (polls DB, processes via Claude),
+    and heartbeat runner (periodic check-ins) loops concurrently.
 
     Args:
         get_token_fn: Returns the Telegram bot token.
@@ -238,19 +348,23 @@ async def run_daemon(
         load_config_fn: Returns the current config dict.
         send_message_fn: Sends a message via Telegram.
         poll_fn: Async callable(bot, offset) returning updates.
-        claude: A ClaudeClient instance.
+        claude: A ClaudeClient instance (shared between processor and heartbeat).
         once: If True, process one iteration and return (for testing).
         get_offset_fn: Returns the persisted update offset.
         save_offset_fn: Persists the update offset.
         db_path: Path to the database file.
+        enable_heartbeat: If True, run the heartbeat runner (default True).
     """
     # Initialize database
     await db.init_db(db_path)
 
+    # Create shared Claude client if not provided
+    client = claude or ClaudeClient()
+
     logger.info("Daemon started")
 
-    # Run consumer and processor concurrently
-    await asyncio.gather(
+    # Build list of tasks to run concurrently
+    tasks = [
         run_message_consumer(
             get_token_fn=get_token_fn,
             build_bot_fn=build_bot_fn,
@@ -266,8 +380,19 @@ async def run_daemon(
             build_bot_fn=build_bot_fn,
             load_config_fn=load_config_fn,
             send_message_fn=send_message_fn,
-            claude=claude,
+            claude=client,
             once=once,
             db_path=db_path,
         ),
-    )
+    ]
+
+    if enable_heartbeat:
+        tasks.append(
+            run_heartbeat_runner(
+                claude=client,
+                once=once,
+                db_path=db_path,
+            )
+        )
+
+    await asyncio.gather(*tasks)
