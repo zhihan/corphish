@@ -8,7 +8,9 @@ import pytest
 
 from corphish.db import (
     get_db_path,
+    get_latest_outgoing_id,
     get_next_unprocessed_message,
+    get_outgoing_messages_after,
     get_unsent_outgoing_messages,
     init_db,
     insert_incoming_message,
@@ -230,3 +232,75 @@ async def test_mark_outgoing_message_sent(temp_db):
         assert row["processed"] == 1
         assert row["processed_at"] is not None
         assert row["telegram_message_id"] == 999
+
+
+async def test_get_latest_outgoing_id_empty(temp_db):
+    """get_latest_outgoing_id() returns 0 when no outgoing messages exist."""
+    result = await get_latest_outgoing_id(db_path=temp_db)
+    assert result == 0
+
+
+async def test_get_latest_outgoing_id_ignores_incoming(temp_db):
+    """get_latest_outgoing_id() ignores incoming messages."""
+    await insert_incoming_message("msg", 1, 10, db_path=temp_db)
+    result = await get_latest_outgoing_id(db_path=temp_db)
+    assert result == 0
+
+
+async def test_get_latest_outgoing_id_returns_max(temp_db):
+    """get_latest_outgoing_id() returns the highest outgoing message ID."""
+    id1 = await insert_outgoing_message("First", db_path=temp_db)
+    id2 = await insert_outgoing_message("Second", db_path=temp_db)
+    result = await get_latest_outgoing_id(db_path=temp_db)
+    assert result == id2
+    assert result > id1
+
+
+async def test_get_outgoing_messages_after_empty(temp_db):
+    """get_outgoing_messages_after() returns empty list when no messages exist."""
+    result = await get_outgoing_messages_after(0, db_path=temp_db)
+    assert result == []
+
+
+async def test_get_outgoing_messages_after_returns_newer(temp_db):
+    """get_outgoing_messages_after() returns only messages with id > after_id."""
+    id1 = await insert_outgoing_message("First", db_path=temp_db)
+    id2 = await insert_outgoing_message("Second", db_path=temp_db)
+    id3 = await insert_outgoing_message("Third", db_path=temp_db)
+
+    result = await get_outgoing_messages_after(id1, db_path=temp_db)
+
+    assert len(result) == 2
+    assert result[0]["id"] == id2
+    assert result[0]["text"] == "Second"
+    assert result[1]["id"] == id3
+    assert result[1]["text"] == "Third"
+
+
+async def test_get_outgoing_messages_after_excludes_after_id(temp_db):
+    """get_outgoing_messages_after() excludes the message with id == after_id."""
+    id1 = await insert_outgoing_message("Only", db_path=temp_db)
+    result = await get_outgoing_messages_after(id1, db_path=temp_db)
+    assert result == []
+
+
+async def test_get_outgoing_messages_after_ignores_incoming(temp_db):
+    """get_outgoing_messages_after() ignores incoming messages."""
+    id1 = await insert_outgoing_message("Out", db_path=temp_db)
+    await insert_incoming_message("In", 1, 10, db_path=temp_db)
+
+    result = await get_outgoing_messages_after(0, db_path=temp_db)
+
+    assert len(result) == 1
+    assert result[0]["text"] == "Out"
+
+
+async def test_get_outgoing_messages_after_ordered_by_id(temp_db):
+    """get_outgoing_messages_after() returns messages in ascending id order."""
+    id1 = await insert_outgoing_message("A", db_path=temp_db)
+    id2 = await insert_outgoing_message("B", db_path=temp_db)
+    id3 = await insert_outgoing_message("C", db_path=temp_db)
+
+    result = await get_outgoing_messages_after(0, db_path=temp_db)
+
+    assert [r["id"] for r in result] == [id1, id2, id3]
