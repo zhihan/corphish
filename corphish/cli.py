@@ -5,9 +5,10 @@ import asyncio
 import logging
 import os
 import sys
+from pathlib import Path
 from typing import Callable, Optional
 
-from . import config
+from . import config, db
 from .bootstrap import run_bootstrap
 from .chat import build_bot, get_bot_token, send_message
 from .claude_client import ClaudeClient
@@ -45,6 +46,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser(
         "skip-updates",
         help="Advance offset past all pending Telegram updates",
+    )
+    sub.add_parser(
+        "join",
+        help="Join the running conversation from the command line (Ctrl+C to detach)",
     )
     return parser
 
@@ -181,6 +186,75 @@ async def cmd_skip_updates(
         logger.info("No pending updates to skip.")
 
 
+def _default_read_line() -> str:
+    """Reads a single line from stdin."""
+    return sys.stdin.readline()
+
+
+async def cmd_join(
+    *,
+    db_path: Optional[Path] = None,
+    init_db_fn: Callable = db.init_db,
+    get_latest_outgoing_id_fn: Callable = db.get_latest_outgoing_id,
+    get_outgoing_after_fn: Callable = db.get_outgoing_messages_after,
+    insert_incoming_fn: Callable = db.insert_incoming_message,
+    read_line_fn: Callable = _default_read_line,
+    poll_interval: float = 0.5,
+) -> None:
+    """Joins the running conversation from the command line.
+
+    Reads user input from stdin and writes it to the database so the daemon
+    picks it up. Polls for new outgoing messages and prints them to stdout.
+    Press Ctrl+C to detach; afterwards responses are delivered only to Telegram.
+
+    Args:
+        db_path: Path to the database file. Defaults to get_db_path().
+        init_db_fn: Initializes the database schema.
+        get_latest_outgoing_id_fn: Returns the current max outgoing message ID.
+        get_outgoing_after_fn: Returns outgoing messages after a given ID.
+        insert_incoming_fn: Inserts an incoming message into the database.
+        read_line_fn: Callable that reads one line from input (injectable for tests).
+        poll_interval: Seconds between polls for new outgoing messages.
+    """
+    await init_db_fn(db_path)
+    last_id = await get_latest_outgoing_id_fn(db_path=db_path)
+
+    print("Joined conversation. Type a message and press Enter to send.")
+    print("Press Ctrl+C to detach.\n")
+
+    loop = asyncio.get_running_loop()
+
+    async def _input_task() -> None:
+        while True:
+            line = await loop.run_in_executor(None, read_line_fn)
+            if not line:
+                return
+            text = line.rstrip("\n")
+            if text:
+                await insert_incoming_fn(
+                    text=text,
+                    telegram_update_id=0,
+                    telegram_message_id=0,
+                    db_path=db_path,
+                )
+
+    async def _output_task() -> None:
+        nonlocal last_id
+        while True:
+            msgs = await get_outgoing_after_fn(last_id, db_path=db_path)
+            for msg in msgs:
+                print(f"\nCorphish: {msg['text']}\n")
+                last_id = msg["id"]
+            await asyncio.sleep(poll_interval)
+
+    try:
+        await asyncio.gather(_input_task(), _output_task())
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        pass
+
+    print("\nDetached. Responses will continue to be sent to Telegram.")
+
+
 async def dispatch(args: argparse.Namespace) -> None:
     """Dispatches to the appropriate command handler.
 
@@ -202,6 +276,8 @@ async def dispatch(args: argparse.Namespace) -> None:
         cmd_status()
     elif command == "skip-updates":
         await cmd_skip_updates()
+    elif command == "join":
+        await cmd_join()
     else:
         # Default: run daemon (auto-bootstrap on first run)
         if config.is_first_run():

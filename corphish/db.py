@@ -241,6 +241,55 @@ async def get_unsent_outgoing_messages(
         return [dict(row) for row in rows]
 
 
+async def get_latest_outgoing_id(
+    db_path: Optional[Path] = None,
+) -> int:
+    """Returns the ID of the most recent outgoing message, or 0 if none.
+
+    Args:
+        db_path: Path to the database file. Defaults to get_db_path().
+
+    Returns:
+        The maximum outgoing message ID, or 0 if the table is empty.
+    """
+    path = db_path or get_db_path()
+    async with aiosqlite.connect(path) as db:
+        cursor = await db.execute(
+            "SELECT MAX(id) FROM messages WHERE direction = 'outgoing'"
+        )
+        row = await cursor.fetchone()
+        return row[0] if row and row[0] is not None else 0
+
+
+async def get_outgoing_messages_after(
+    after_id: int,
+    db_path: Optional[Path] = None,
+) -> list[dict]:
+    """Returns outgoing messages with id > after_id, ordered by id.
+
+    Args:
+        after_id: Only return messages with id strictly greater than this.
+        db_path: Path to the database file. Defaults to get_db_path().
+
+    Returns:
+        A list of dicts with keys: id, text, created_at
+    """
+    path = db_path or get_db_path()
+    async with aiosqlite.connect(path) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT id, text, created_at
+            FROM messages
+            WHERE direction = 'outgoing' AND id > ?
+            ORDER BY id ASC
+            """,
+            (after_id,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
 async def mark_outgoing_message_sent(
     message_id: int,
     telegram_message_id: int,

@@ -1,5 +1,6 @@
 """Tests for corphish.cli."""
 
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -7,6 +8,7 @@ import pytest
 
 from corphish.cli import (
     build_parser,
+    cmd_join,
     cmd_run_once,
     cmd_send,
     cmd_skip_updates,
@@ -334,6 +336,14 @@ class TestDispatch:
             await dispatch(args)
             mock_skip.assert_awaited_once()
 
+    async def test_dispatch_join(self):
+        parser = build_parser()
+        args = parser.parse_args(["join"])
+
+        with patch("corphish.cli.cmd_join", new_callable=AsyncMock) as mock_join:
+            await dispatch(args)
+            mock_join.assert_awaited_once()
+
 
 # --- Parser: skip-updates ---
 
@@ -343,6 +353,11 @@ class TestBuildParserSkipUpdates:
         parser = build_parser()
         args = parser.parse_args(["skip-updates"])
         assert args.command == "skip-updates"
+
+    def test_join_command(self):
+        parser = build_parser()
+        args = parser.parse_args(["join"])
+        assert args.command == "join"
 
 
 # --- cmd_skip_updates tests ---
@@ -389,4 +404,114 @@ class TestCmdSkipUpdates:
                 save_offset_fn=MagicMock(),
             )
         assert exc_info.value.code == 1
+
+
+# --- cmd_join tests ---
+
+
+class TestCmdJoin:
+    async def test_join_inserts_user_input(self):
+        """cmd_join inserts lines from stdin as incoming messages."""
+        insert_fn = AsyncMock()
+        lines = iter(["hello from cli\n", ""])
+
+        await cmd_join(
+            db_path=None,
+            init_db_fn=AsyncMock(),
+            get_latest_outgoing_id_fn=AsyncMock(return_value=0),
+            get_outgoing_after_fn=AsyncMock(side_effect=asyncio.CancelledError()),
+            insert_incoming_fn=insert_fn,
+            read_line_fn=lambda: next(lines),
+            poll_interval=0,
+        )
+
+        insert_fn.assert_awaited_once_with(
+            text="hello from cli",
+            telegram_update_id=0,
+            telegram_message_id=0,
+            db_path=None,
+        )
+
+    async def test_join_empty_lines_not_inserted(self):
+        """cmd_join does not insert blank lines."""
+        insert_fn = AsyncMock()
+        lines = iter(["", ""])
+
+        await cmd_join(
+            db_path=None,
+            init_db_fn=AsyncMock(),
+            get_latest_outgoing_id_fn=AsyncMock(return_value=0),
+            get_outgoing_after_fn=AsyncMock(side_effect=asyncio.CancelledError()),
+            insert_incoming_fn=insert_fn,
+            read_line_fn=lambda: next(lines),
+            poll_interval=0,
+        )
+
+        insert_fn.assert_not_awaited()
+
+    async def test_join_prints_new_outgoing_messages(self, capsys):
+        """cmd_join prints outgoing messages that appear after joining."""
+        call_count = 0
+
+        async def fake_get_outgoing(after_id, db_path):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return [{"id": 1, "text": "Hello from Claude", "created_at": "now"}]
+            raise asyncio.CancelledError()
+
+        await cmd_join(
+            db_path=None,
+            init_db_fn=AsyncMock(),
+            get_latest_outgoing_id_fn=AsyncMock(return_value=0),
+            get_outgoing_after_fn=fake_get_outgoing,
+            insert_incoming_fn=AsyncMock(),
+            read_line_fn=lambda: "",
+            poll_interval=0,
+        )
+
+        captured = capsys.readouterr()
+        assert "Hello from Claude" in captured.out
+
+    async def test_join_tracks_last_seen_id(self, capsys):
+        """cmd_join passes the last seen ID to subsequent polls."""
+        poll_calls = []
+        call_count = 0
+
+        async def fake_get_outgoing(after_id, db_path):
+            nonlocal call_count
+            poll_calls.append(after_id)
+            call_count += 1
+            if call_count == 1:
+                return [{"id": 5, "text": "Msg", "created_at": "now"}]
+            raise asyncio.CancelledError()
+
+        await cmd_join(
+            db_path=None,
+            init_db_fn=AsyncMock(),
+            get_latest_outgoing_id_fn=AsyncMock(return_value=3),
+            get_outgoing_after_fn=fake_get_outgoing,
+            insert_incoming_fn=AsyncMock(),
+            read_line_fn=lambda: "",
+            poll_interval=0,
+        )
+
+        assert poll_calls[0] == 3
+        assert poll_calls[1] == 5
+
+    async def test_join_initializes_db(self):
+        """cmd_join calls init_db_fn on startup."""
+        init_fn = AsyncMock()
+
+        await cmd_join(
+            db_path=None,
+            init_db_fn=init_fn,
+            get_latest_outgoing_id_fn=AsyncMock(return_value=0),
+            get_outgoing_after_fn=AsyncMock(side_effect=asyncio.CancelledError()),
+            insert_incoming_fn=AsyncMock(),
+            read_line_fn=lambda: "",
+            poll_interval=0,
+        )
+
+        init_fn.assert_awaited_once_with(None)
 
