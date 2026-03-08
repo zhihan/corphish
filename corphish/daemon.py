@@ -140,6 +140,7 @@ async def run_message_processor(
     insert_outgoing_fn: Callable = db.insert_outgoing_message,
     get_unsent_outgoing_fn: Callable = db.get_unsent_outgoing_messages,
     mark_outgoing_sent_fn: Callable = db.mark_outgoing_message_sent,
+    get_max_turns_fn: Callable = config.get_max_conversation_turns,
 ) -> None:
     """Runs the message processor loop.
 
@@ -159,12 +160,14 @@ async def run_message_processor(
         insert_outgoing_fn: Function to insert outgoing message.
         get_unsent_outgoing_fn: Function to get unsent outgoing messages.
         mark_outgoing_sent_fn: Function to mark outgoing message as sent.
+        get_max_turns_fn: Function to get the max turns before auto-reset.
     """
     token = get_token_fn()
     bot = build_bot_fn(token)
     cfg = load_config_fn()
     chat_id = cfg["chat_id"]
     client = claude or ClaudeClient()
+    turn_count = 0
 
     logger.info("Message processor started")
 
@@ -232,6 +235,16 @@ async def run_message_processor(
                     continue
 
                 await mark_processed_fn(message["id"], db_path=db_path)
+
+                turn_count += 1
+                if turn_count >= get_max_turns_fn():
+                    async with client.lock:
+                        client.reset()
+                    turn_count = 0
+                    logger.info(
+                        "[processor] Auto-reset conversation after %d turns",
+                        get_max_turns_fn(),
+                    )
 
         # Send any unsent outgoing messages
         outgoing = await get_unsent_outgoing_fn(db_path=db_path)

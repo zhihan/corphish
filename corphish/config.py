@@ -139,3 +139,16 @@ def save_heartbeat_model(model: str) -> None:
         model: The model to use for heartbeat checks ("haiku", "sonnet", or "opus").
     """
     save_config({"heartbeat_model": model})
+
+
+# Default max conversation turns before auto-reset
+_DEFAULT_MAX_CONVERSATION_TURNS = 30
+
+
+def get_max_conversation_turns() -> int:
+    """Returns the max number of turns before the conversation is auto-reset.
+
+    Returns:
+        The max_conversation_turns value from config, or 30 if not set.
+    """
+    return load_config().get("max_conversation_turns", _DEFAULT_MAX_CONVERSATION_TURNS)

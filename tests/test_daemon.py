@@ -90,6 +90,7 @@ def _make_processor_deps(chat_id=42):
         "insert_outgoing_fn": AsyncMock(return_value=1),
         "get_unsent_outgoing_fn": AsyncMock(return_value=[]),
         "mark_outgoing_sent_fn": AsyncMock(),
+        "get_max_turns_fn": MagicMock(return_value=30),
         "_bot": mock_bot,
     }
 
@@ -236,6 +237,64 @@ async def test_processor_continues_after_claude_failure():
 
     deps["mark_processed_fn"].assert_awaited_once_with(1, db_path=None)
     deps["insert_outgoing_fn"].assert_not_awaited()
+
+
+async def test_processor_auto_resets_after_max_turns():
+    """Processor should reset the conversation after max_turns messages."""
+    def make_message(i):
+        return {"id": i, "text": f"msg {i}", "telegram_update_id": i,
+                "telegram_message_id": i * 10, "created_at": "2024-01-01T00:00:00Z"}
+
+    messages = [make_message(i) for i in range(1, 4)]  # 3 messages
+    deps = _make_processor_deps(chat_id=42)
+    deps["get_max_turns_fn"] = MagicMock(return_value=3)
+    deps["get_next_unprocessed_fn"] = AsyncMock(side_effect=messages + [None])
+    deps["once"] = False  # need the loop to run 4 times
+
+    # Patch asyncio.sleep so the loop doesn't actually wait
+    with patch("corphish.daemon.asyncio.sleep", new=AsyncMock(side_effect=[None, None, None, StopAsyncIteration()])):
+        try:
+            await run_message_processor(**{k: v for k, v in deps.items() if k != "_bot"})
+        except StopAsyncIteration:
+            pass
+
+    deps["claude"].reset.assert_called_once()
+
+
+async def test_processor_does_not_reset_before_max_turns():
+    """Processor should not reset before max_turns messages are processed."""
+    message = {"id": 1, "text": "hello", "telegram_update_id": 1,
+               "telegram_message_id": 10, "created_at": "2024-01-01T00:00:00Z"}
+    deps = _make_processor_deps(chat_id=42)
+    deps["get_max_turns_fn"] = MagicMock(return_value=30)
+    deps["get_next_unprocessed_fn"] = AsyncMock(side_effect=[message, None])
+
+    await run_message_processor(**{k: v for k, v in deps.items() if k != "_bot"})
+
+    deps["claude"].reset.assert_not_called()
+
+
+async def test_processor_reset_resets_turn_counter():
+    """After auto-reset, turn counter should restart from zero."""
+    def make_message(i):
+        return {"id": i, "text": f"msg {i}", "telegram_update_id": i,
+                "telegram_message_id": i * 10, "created_at": "2024-01-01T00:00:00Z"}
+
+    # 5 messages with max_turns=3: should reset once after turn 3, not again
+    messages = [make_message(i) for i in range(1, 6)]
+    deps = _make_processor_deps(chat_id=42)
+    deps["get_max_turns_fn"] = MagicMock(return_value=3)
+    deps["get_next_unprocessed_fn"] = AsyncMock(side_effect=messages + [None])
+    deps["once"] = False
+
+    with patch("corphish.daemon.asyncio.sleep", new=AsyncMock(side_effect=[None, None, None, None, None, StopAsyncIteration()])):
+        try:
+            await run_message_processor(**{k: v for k, v in deps.items() if k != "_bot"})
+        except StopAsyncIteration:
+            pass
+
+    # Should reset exactly once (after 3 turns; the next 2 turns don't trigger another)
+    assert deps["claude"].reset.call_count == 1
 
 
 # --- Integration Tests ---
