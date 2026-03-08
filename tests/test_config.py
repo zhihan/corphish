@@ -111,9 +111,9 @@ def test_save_update_offset_overwrites_previous(tmp_path, monkeypatch):
 
 
 def test_get_heartbeat_interval_default(tmp_path, monkeypatch):
-    """Default heartbeat interval should be 30 minutes (1800 seconds)."""
+    """Default heartbeat interval should be 1 hour (3600 seconds)."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    assert config.get_heartbeat_interval() == 1800
+    assert config.get_heartbeat_interval() == 3600
 
 
 def test_get_heartbeat_interval_after_save(tmp_path, monkeypatch):
