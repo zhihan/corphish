@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 # Model IDs for dynamic switching
 MODEL_HAIKU = "claude-haiku-4-5-20251001"
-MODEL_SONNET = "claude-sonnet-4-6-20260522"
+MODEL_SONNET = "claude-sonnet-4-5-20250929"
 MODEL_OPUS = "claude-opus-4-5-20251101"
 
 _DEFAULT_MODEL = MODEL_SONNET
