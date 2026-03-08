@@ -8,7 +8,7 @@ from typing import Callable, Optional
 from telegram import Bot
 
 from . import chat, config, db
-from .claude_client import ClaudeClient
+from .claude_client import ClaudeClient, MODEL_HAIKU, MODEL_OPUS, MODEL_SONNET
 
 logger = logging.getLogger(__name__)
 
@@ -281,6 +281,64 @@ def _is_trivial_response(response: str) -> bool:
     return any(pattern in lowered for pattern in trivial_patterns)
 
 
+def _needs_escalation(response: str) -> bool:
+    """Determines if a response signals that a more capable model is needed.
+
+    Detects uncertainty patterns that suggest Haiku (or a smaller model)
+    cannot adequately handle the request and should escalate to Opus.
+
+    Args:
+        response: The response text from Claude.
+
+    Returns:
+        True if the response indicates escalation is needed, False otherwise.
+    """
+    if not response or not response.strip():
+        return False
+
+    lowered = response.lower().strip()
+
+    # Patterns indicating uncertainty or need for deeper analysis
+    uncertainty_patterns = [
+        "i'm not sure",
+        "i am not sure",
+        "not certain",
+        "this needs deeper analysis",
+        "deeper analysis",
+        "needs more thought",
+        "requires more context",
+        "beyond my ability",
+        "i cannot determine",
+        "i can't determine",
+        "uncertain about",
+        "need to escalate",
+        "escalate this",
+        "more complex than",
+        "this is complex",
+        "i don't have enough information",
+        "i do not have enough information",
+        "requires further investigation",
+    ]
+    return any(pattern in lowered for pattern in uncertainty_patterns)
+
+
+def _get_model_for_name(name: str) -> str:
+    """Returns the model ID for a given model name.
+
+    Args:
+        name: Short model name ("haiku", "sonnet", or "opus").
+
+    Returns:
+        The full model ID string.
+    """
+    mapping = {
+        "haiku": MODEL_HAIKU,
+        "sonnet": MODEL_SONNET,
+        "opus": MODEL_OPUS,
+    }
+    return mapping.get(name.lower(), MODEL_HAIKU)
+
+
 async def run_heartbeat_runner(
     *,
     claude: ClaudeClient,
@@ -289,12 +347,14 @@ async def run_heartbeat_runner(
     insert_outgoing_fn: Callable = db.insert_outgoing_message,
     get_interval_fn: Callable = config.get_heartbeat_interval,
     load_prompt_fn: Callable = _load_heartbeat_prompt,
+    get_model_fn: Callable = config.get_heartbeat_model,
+    log_usage_fn: Callable = db.log_model_usage,
 ) -> None:
-    """Runs the heartbeat runner loop.
+    """Runs the heartbeat runner loop with dynamic model switching.
 
     Fires at configurable intervals (default 30 minutes) and sends a check-in
-    prompt to Claude. Only surfaces meaningful responses to users. Skips
-    execution if Claude is currently busy processing a message.
+    prompt to Claude. Uses Haiku by default for cost efficiency, escalating
+    to Opus if the response signals uncertainty or need for deeper reasoning.
 
     Args:
         claude: A ClaudeClient instance (shared with processor for lock check).
@@ -303,6 +363,8 @@ async def run_heartbeat_runner(
         insert_outgoing_fn: Function to insert outgoing message.
         get_interval_fn: Function to get heartbeat interval in seconds.
         load_prompt_fn: Function to load the heartbeat prompt.
+        get_model_fn: Function to get the default heartbeat model name.
+        log_usage_fn: Function to log model usage for cost tracking.
     """
     prompt = load_prompt_fn()
     logger.info("Heartbeat runner started")
@@ -321,9 +383,40 @@ async def run_heartbeat_runner(
 
         logger.info("[heartbeat] Firing heartbeat check-in")
 
+        # Get configured default model (defaults to Haiku)
+        model_name = get_model_fn()
+        model_id = _get_model_for_name(model_name)
+        escalated = False
+
         try:
             async with claude.lock:
-                response = await claude.send(prompt)
+                response = await claude.send_with_model(prompt, model_id)
+
+            # Log initial model usage
+            await log_usage_fn(
+                model=model_id,
+                source="heartbeat",
+                escalated=False,
+                db_path=db_path,
+            )
+
+            # Check if response signals need for escalation
+            if _needs_escalation(response) and model_id != MODEL_OPUS:
+                logger.info(
+                    "[heartbeat] Response signals uncertainty, escalating to Opus"
+                )
+                async with claude.lock:
+                    response = await claude.send_with_model(prompt, MODEL_OPUS)
+
+                # Log escalated usage
+                await log_usage_fn(
+                    model=MODEL_OPUS,
+                    source="heartbeat",
+                    escalated=True,
+                    db_path=db_path,
+                )
+                escalated = True
+
         except Exception:
             logger.exception("Heartbeat Claude call failed")
             if once:
@@ -339,7 +432,12 @@ async def run_heartbeat_runner(
         if _is_trivial_response(response):
             logger.info("[heartbeat] Response was trivial, suppressing")
         else:
-            logger.info("[heartbeat] Sending response: %s", response[:50])
+            if escalated:
+                logger.info(
+                    "[heartbeat] Sending escalated response: %s", response[:50]
+                )
+            else:
+                logger.info("[heartbeat] Sending response: %s", response[:50])
             await insert_outgoing_fn(text=response, db_path=db_path)
 
         if once:

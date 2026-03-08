@@ -96,15 +96,15 @@ def is_first_run() -> bool:
     return "chat_id" not in load_config()
 
 
-# Default heartbeat interval: 30 minutes in seconds
-_DEFAULT_HEARTBEAT_INTERVAL = 30 * 60
+# Default heartbeat interval: 1 hour in seconds
+_DEFAULT_HEARTBEAT_INTERVAL = 60 * 60
 
 
 def get_heartbeat_interval() -> int:
     """Returns the heartbeat interval in seconds.
 
     Returns:
-        The heartbeat_interval value from config, or 1800 (30 minutes) if not set.
+        The heartbeat_interval value from config, or 3600 (1 hour) if not set.
     """
     return load_config().get("heartbeat_interval", _DEFAULT_HEARTBEAT_INTERVAL)
 
@@ -116,3 +116,26 @@ def save_heartbeat_interval(interval: int) -> None:
         interval: The heartbeat interval in seconds.
     """
     save_config({"heartbeat_interval": interval})
+
+
+# Default heartbeat model: use Haiku for simple heartbeat checks
+_DEFAULT_HEARTBEAT_MODEL = "haiku"
+
+
+def get_heartbeat_model() -> str:
+    """Returns the model to use for heartbeat checks.
+
+    Returns:
+        The heartbeat_model value from config, or "haiku" if not set.
+        Valid values: "haiku", "sonnet", "opus"
+    """
+    return load_config().get("heartbeat_model", _DEFAULT_HEARTBEAT_MODEL)
+
+
+def save_heartbeat_model(model: str) -> None:
+    """Persists the heartbeat model to config.
+
+    Args:
+        model: The model to use for heartbeat checks ("haiku", "sonnet", or "opus").
+    """
+    save_config({"heartbeat_model": model})

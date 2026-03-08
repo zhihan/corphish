@@ -9,12 +9,14 @@ import pytest
 from corphish.db import (
     get_db_path,
     get_latest_outgoing_id,
+    get_model_usage_summary,
     get_next_unprocessed_message,
     get_outgoing_messages_after,
     get_unsent_outgoing_messages,
     init_db,
     insert_incoming_message,
     insert_outgoing_message,
+    log_model_usage,
     mark_message_processed,
     mark_outgoing_message_sent,
 )
@@ -304,3 +306,99 @@ async def test_get_outgoing_messages_after_ordered_by_id(temp_db):
     result = await get_outgoing_messages_after(0, db_path=temp_db)
 
     assert [r["id"] for r in result] == [id1, id2, id3]
+
+
+# --- Model Usage Tracking Tests ---
+
+
+async def test_init_db_creates_model_usage_table(tmp_path):
+    """init_db() should create the model_usage table."""
+    db_path = tmp_path / "test.db"
+    await init_db(db_path)
+
+    import aiosqlite
+
+    async with aiosqlite.connect(db_path) as db:
+        cursor = await db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='model_usage'"
+        )
+        row = await cursor.fetchone()
+        assert row is not None
+
+
+async def test_log_model_usage(temp_db):
+    """log_model_usage() should insert a usage record."""
+    usage_id = await log_model_usage(
+        model="claude-haiku-4-5-20251001",
+        source="heartbeat",
+        escalated=False,
+        db_path=temp_db,
+    )
+
+    assert usage_id > 0
+
+    import aiosqlite
+
+    async with aiosqlite.connect(temp_db) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM model_usage WHERE id = ?", (usage_id,))
+        row = await cursor.fetchone()
+        assert row is not None
+        assert row["model"] == "claude-haiku-4-5-20251001"
+        assert row["source"] == "heartbeat"
+        assert row["escalated"] == 0
+
+
+async def test_log_model_usage_escalated(temp_db):
+    """log_model_usage() should record escalated flag."""
+    usage_id = await log_model_usage(
+        model="claude-opus-4-5-20251101",
+        source="heartbeat",
+        escalated=True,
+        db_path=temp_db,
+    )
+
+    import aiosqlite
+
+    async with aiosqlite.connect(temp_db) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM model_usage WHERE id = ?", (usage_id,))
+        row = await cursor.fetchone()
+        assert row["escalated"] == 1
+
+
+async def test_get_model_usage_summary_empty(temp_db):
+    """get_model_usage_summary() returns empty list when no usage exists."""
+    summary = await get_model_usage_summary(db_path=temp_db)
+    assert summary == []
+
+
+async def test_get_model_usage_summary(temp_db):
+    """get_model_usage_summary() should aggregate usage by model and source."""
+    # Log multiple usage events
+    await log_model_usage("haiku", "heartbeat", False, db_path=temp_db)
+    await log_model_usage("haiku", "heartbeat", False, db_path=temp_db)
+    await log_model_usage("opus", "heartbeat", True, db_path=temp_db)
+    await log_model_usage("haiku", "processor", False, db_path=temp_db)
+
+    summary = await get_model_usage_summary(db_path=temp_db)
+
+    assert len(summary) == 3
+
+    # Find heartbeat haiku entry
+    haiku_heartbeat = next(
+        (s for s in summary if s["model"] == "haiku" and s["source"] == "heartbeat"),
+        None,
+    )
+    assert haiku_heartbeat is not None
+    assert haiku_heartbeat["count"] == 2
+    assert haiku_heartbeat["escalated_count"] == 0
+
+    # Find heartbeat opus entry
+    opus_heartbeat = next(
+        (s for s in summary if s["model"] == "opus" and s["source"] == "heartbeat"),
+        None,
+    )
+    assert opus_heartbeat is not None
+    assert opus_heartbeat["count"] == 1
+    assert opus_heartbeat["escalated_count"] == 1

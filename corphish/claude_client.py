@@ -17,7 +17,12 @@ from . import config
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_MODEL = "claude-opus-4-5-20251101"
+# Model IDs for dynamic switching
+MODEL_HAIKU = "claude-haiku-4-5-20251001"
+MODEL_SONNET = "claude-sonnet-4-6-20260522"
+MODEL_OPUS = "claude-opus-4-5-20251101"
+
+_DEFAULT_MODEL = MODEL_OPUS
 
 _DISALLOWED_TOOLS = ["EnterPlanMode", "ExitPlanMode", "AskUserQuestion"]
 
@@ -177,6 +182,53 @@ class ClaudeClient:
         async for message in self._query(
             prompt=user_text, options=self._options
         ):
+            if done:
+                continue
+            if isinstance(message, ResultMessage):
+                if message.result:
+                    result_text = message.result
+                done = True
+            elif isinstance(message, AssistantMessage):
+                parts = [
+                    block.text
+                    for block in message.content
+                    if isinstance(block, TextBlock)
+                ]
+                if parts:
+                    last_text = "\n".join(parts)
+
+        return result_text or last_text
+
+    async def send_with_model(self, user_text: str, model: str) -> str:
+        """Sends a user message with a specific model.
+
+        Creates a one-off query with the specified model without changing
+        the client's default model. Does not maintain conversation state
+        with the main conversation.
+
+        Args:
+            user_text: The message from the user.
+            model: The model ID to use for this query.
+
+        Returns:
+            The text content of Claude's response.
+        """
+        one_off_options = _build_options(model=model)
+        # Disable conversation continuation for one-off queries
+        one_off_options = ClaudeAgentOptions(
+            system_prompt=one_off_options.system_prompt,
+            permission_mode=one_off_options.permission_mode,
+            disallowed_tools=one_off_options.disallowed_tools,
+            model=model,
+            continue_conversation=False,
+            cwd=one_off_options.cwd,
+        )
+
+        last_text = ""
+        result_text = None
+        done = False
+
+        async for message in self._query(prompt=user_text, options=one_off_options):
             if done:
                 continue
             if isinstance(message, ResultMessage):
