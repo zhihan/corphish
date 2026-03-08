@@ -116,3 +116,26 @@ def save_heartbeat_interval(interval: int) -> None:
         interval: The heartbeat interval in seconds.
     """
     save_config({"heartbeat_interval": interval})
+
+
+# Default heartbeat model: use Haiku for simple heartbeat checks
+_DEFAULT_HEARTBEAT_MODEL = "haiku"
+
+
+def get_heartbeat_model() -> str:
+    """Returns the model to use for heartbeat checks.
+
+    Returns:
+        The heartbeat_model value from config, or "haiku" if not set.
+        Valid values: "haiku", "sonnet", "opus"
+    """
+    return load_config().get("heartbeat_model", _DEFAULT_HEARTBEAT_MODEL)
+
+
+def save_heartbeat_model(model: str) -> None:
+    """Persists the heartbeat model to config.
+
+    Args:
+        model: The model to use for heartbeat checks ("haiku", "sonnet", or "opus").
+    """
+    save_config({"heartbeat_model": model})

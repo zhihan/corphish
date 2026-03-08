@@ -18,7 +18,7 @@ from . import config
 logger = logging.getLogger(__name__)
 
 # Schema version for migrations
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def get_db_path() -> Path:
@@ -57,8 +57,9 @@ async def init_db(db_path: Optional[Path] = None) -> None:
         row = await cursor.fetchone()
         current_version = row[0] if row else 0
 
-        if current_version < SCHEMA_VERSION:
-            logger.info("Initializing database schema version %d", SCHEMA_VERSION)
+        # Apply migrations incrementally
+        if current_version < 1:
+            logger.info("Applying database schema version 1")
 
             # Create messages table
             await db.execute(
@@ -87,11 +88,44 @@ async def init_db(db_path: Optional[Path] = None) -> None:
             # Record schema version
             await db.execute(
                 "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
-                (SCHEMA_VERSION, datetime.now(timezone.utc).isoformat()),
+                (1, datetime.now(timezone.utc).isoformat()),
             )
 
             await db.commit()
-            logger.info("Database schema initialized successfully")
+            logger.info("Database schema version 1 applied")
+
+        if current_version < 2:
+            logger.info("Applying database schema version 2 (model usage tracking)")
+
+            # Create model_usage table for cost tracking
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS model_usage (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    model TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    escalated BOOLEAN NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+
+            # Create index for querying usage by model and source
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_model_usage_model ON model_usage(model, created_at)"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_model_usage_source ON model_usage(source, created_at)"
+            )
+
+            # Record schema version
+            await db.execute(
+                "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
+                (2, datetime.now(timezone.utc).isoformat()),
+            )
+
+            await db.commit()
+            logger.info("Database schema version 2 applied")
 
 
 async def insert_incoming_message(
@@ -313,3 +347,64 @@ async def mark_outgoing_message_sent(
             (datetime.now(timezone.utc).isoformat(), telegram_message_id, message_id),
         )
         await db.commit()
+
+
+async def log_model_usage(
+    model: str,
+    source: str,
+    escalated: bool = False,
+    db_path: Optional[Path] = None,
+) -> int:
+    """Logs a model usage event for cost tracking.
+
+    Args:
+        model: The model ID used (e.g., "claude-haiku-4-5-20251001").
+        source: The component that used the model (e.g., "heartbeat", "processor").
+        escalated: Whether this was an escalation from a cheaper model.
+        db_path: Path to the database file. Defaults to get_db_path().
+
+    Returns:
+        The database ID of the inserted usage record.
+    """
+    path = db_path or get_db_path()
+    async with aiosqlite.connect(path) as db:
+        cursor = await db.execute(
+            """
+            INSERT INTO model_usage (model, source, escalated, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                model,
+                source,
+                1 if escalated else 0,
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def get_model_usage_summary(
+    db_path: Optional[Path] = None,
+) -> list[dict]:
+    """Returns a summary of model usage grouped by model and source.
+
+    Args:
+        db_path: Path to the database file. Defaults to get_db_path().
+
+    Returns:
+        A list of dicts with keys: model, source, count, escalated_count
+    """
+    path = db_path or get_db_path()
+    async with aiosqlite.connect(path) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT model, source, COUNT(*) as count, SUM(escalated) as escalated_count
+            FROM model_usage
+            GROUP BY model, source
+            ORDER BY count DESC
+            """
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
