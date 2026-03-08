@@ -22,7 +22,7 @@ MODEL_HAIKU = "claude-haiku-4-5-20251001"
 MODEL_SONNET = "claude-sonnet-4-6-20260522"
 MODEL_OPUS = "claude-opus-4-5-20251101"
 
-_DEFAULT_MODEL = MODEL_OPUS
+_DEFAULT_MODEL = MODEL_SONNET
 
 _DISALLOWED_TOOLS = ["EnterPlanMode", "ExitPlanMode", "AskUserQuestion"]
 
