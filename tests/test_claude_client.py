@@ -7,6 +7,7 @@ import pytest
 
 from corphish.claude_client import (
     ClaudeClient,
+    _build_heartbeat_options,
     _build_options,
     _load_system_prompt,
 )
@@ -107,6 +108,34 @@ def test_load_system_prompt_returns_string():
 # ---------------------------------------------------------------------------
 # Options construction tests
 # ---------------------------------------------------------------------------
+
+
+def test_build_heartbeat_options_uses_plain_string_prompt():
+    opts = _build_heartbeat_options(heartbeat_prompt="Check in now.")
+    assert isinstance(opts.system_prompt, str)
+    assert "Check in now." in opts.system_prompt
+
+
+def test_build_heartbeat_options_no_preset():
+    opts = _build_heartbeat_options(heartbeat_prompt="Check in.")
+    assert not isinstance(opts.system_prompt, dict)
+
+
+def test_build_heartbeat_options_disables_continue_conversation():
+    opts = _build_heartbeat_options(heartbeat_prompt="Check in.")
+    assert opts.continue_conversation is False
+
+
+def test_build_heartbeat_options_sets_model():
+    opts = _build_heartbeat_options(model="claude-haiku-4-5-20251001", heartbeat_prompt="Check in.")
+    assert opts.model == "claude-haiku-4-5-20251001"
+
+
+def test_build_heartbeat_options_includes_identity():
+    opts = _build_heartbeat_options(heartbeat_prompt="HEARTBEAT_MARKER")
+    identity = _load_system_prompt()
+    assert identity in opts.system_prompt
+    assert "HEARTBEAT_MARKER" in opts.system_prompt
 
 
 def test_build_options_uses_claude_code_preset():
@@ -684,3 +713,81 @@ async def test_reset_clears_conversation_history():
     result2 = await client.send("hi again")
     assert result2 == "response-2"
     assert call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# send_heartbeat() tests
+# ---------------------------------------------------------------------------
+
+
+async def test_send_heartbeat_returns_text():
+    """send_heartbeat() returns Claude's text response."""
+    from claude_agent_sdk import AssistantMessage, TextBlock, ResultMessage
+
+    messages = [
+        AssistantMessage(content=[TextBlock(text="Your meeting is at 3pm.")], model="test"),
+        ResultMessage(
+            subtype="success",
+            duration_ms=100,
+            duration_api_ms=80,
+            is_error=False,
+            num_turns=1,
+            session_id="s1",
+        ),
+    ]
+    client = _make_client(query_fn=_make_query_fn(messages))
+    result = await client.send_heartbeat("Heartbeat prompt", "claude-haiku-4-5-20251001")
+    assert result == "Your meeting is at 3pm."
+
+
+async def test_send_heartbeat_uses_plain_system_prompt():
+    """send_heartbeat() must not use the claude_code preset."""
+    from claude_agent_sdk import ResultMessage
+
+    captured_options = {}
+
+    async def capturing_query(*, prompt, options):
+        captured_options["system_prompt"] = options.system_prompt
+        captured_options["continue_conversation"] = options.continue_conversation
+        yield ResultMessage(
+            subtype="success",
+            duration_ms=0,
+            duration_api_ms=0,
+            is_error=False,
+            num_turns=0,
+            session_id="s1",
+        )
+
+    client = _make_client(query_fn=capturing_query)
+    await client.send_heartbeat("Check in.", "claude-haiku-4-5-20251001")
+
+    assert isinstance(captured_options["system_prompt"], str), (
+        "Heartbeat must use plain string system prompt, not the claude_code preset dict"
+    )
+    assert captured_options["continue_conversation"] is False
+
+
+async def test_send_heartbeat_does_not_affect_main_conversation():
+    """send_heartbeat() should not alter the client's main _options."""
+    from claude_agent_sdk import ClaudeAgentOptions, ResultMessage
+
+    original_opts = ClaudeAgentOptions(
+        system_prompt={"type": "preset", "preset": "claude_code", "append": "identity"},
+        continue_conversation=True,
+    )
+
+    async def noop_query(*, prompt, options):
+        yield ResultMessage(
+            subtype="success",
+            duration_ms=0,
+            duration_api_ms=0,
+            is_error=False,
+            num_turns=0,
+            session_id="s1",
+        )
+
+    client = _make_client(query_fn=noop_query, options=original_opts)
+    await client.send_heartbeat("Heartbeat", "claude-haiku-4-5-20251001")
+
+    assert client._options is original_opts
+    assert client._options.continue_conversation is True

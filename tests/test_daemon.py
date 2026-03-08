@@ -332,7 +332,7 @@ def _make_heartbeat_deps():
     mock_claude = MagicMock()
     mock_claude.lock = asyncio.Lock()
     mock_claude.busy = False
-    mock_claude.send_with_model = AsyncMock(return_value="meaningful response")
+    mock_claude.send_heartbeat = AsyncMock(return_value="meaningful response")
 
     return {
         "claude": mock_claude,
@@ -348,11 +348,11 @@ def _make_heartbeat_deps():
 async def test_heartbeat_sends_meaningful_response():
     """Heartbeat should send non-trivial responses to database."""
     deps = _make_heartbeat_deps()
-    deps["claude"].send_with_model = AsyncMock(return_value="Remember your meeting at 3pm!")
+    deps["claude"].send_heartbeat = AsyncMock(return_value="Remember your meeting at 3pm!")
 
     await run_heartbeat_runner(**deps)
 
-    deps["claude"].send_with_model.assert_awaited_once_with("Heartbeat prompt", MODEL_HAIKU)
+    deps["claude"].send_heartbeat.assert_awaited_once_with("Heartbeat prompt", MODEL_HAIKU)
     deps["insert_outgoing_fn"].assert_awaited_once_with(
         text="Remember your meeting at 3pm!", db_path=None
     )
@@ -361,22 +361,22 @@ async def test_heartbeat_sends_meaningful_response():
 async def test_heartbeat_suppresses_trivial_response():
     """Heartbeat should not send trivial responses."""
     deps = _make_heartbeat_deps()
-    deps["claude"].send_with_model = AsyncMock(return_value="No message needed.")
+    deps["claude"].send_heartbeat = AsyncMock(return_value="No message needed.")
 
     await run_heartbeat_runner(**deps)
 
-    deps["claude"].send_with_model.assert_awaited_once()
+    deps["claude"].send_heartbeat.assert_awaited_once()
     deps["insert_outgoing_fn"].assert_not_awaited()
 
 
 async def test_heartbeat_suppresses_empty_response():
     """Heartbeat should not send empty responses."""
     deps = _make_heartbeat_deps()
-    deps["claude"].send_with_model = AsyncMock(return_value="")
+    deps["claude"].send_heartbeat = AsyncMock(return_value="")
 
     await run_heartbeat_runner(**deps)
 
-    deps["claude"].send_with_model.assert_awaited_once()
+    deps["claude"].send_heartbeat.assert_awaited_once()
     deps["insert_outgoing_fn"].assert_not_awaited()
 
 
@@ -387,19 +387,19 @@ async def test_heartbeat_skips_when_claude_busy():
 
     await run_heartbeat_runner(**deps)
 
-    deps["claude"].send_with_model.assert_not_awaited()
+    deps["claude"].send_heartbeat.assert_not_awaited()
     deps["insert_outgoing_fn"].assert_not_awaited()
 
 
 async def test_heartbeat_continues_after_claude_failure():
     """Heartbeat should handle Claude failures gracefully."""
     deps = _make_heartbeat_deps()
-    deps["claude"].send_with_model = AsyncMock(side_effect=RuntimeError("API down"))
+    deps["claude"].send_heartbeat = AsyncMock(side_effect=RuntimeError("API down"))
 
     # Should not raise
     await run_heartbeat_runner(**deps)
 
-    deps["claude"].send_with_model.assert_awaited_once()
+    deps["claude"].send_heartbeat.assert_awaited_once()
     deps["insert_outgoing_fn"].assert_not_awaited()
 
 
@@ -544,7 +544,7 @@ def _make_dynamic_heartbeat_deps():
     mock_claude = MagicMock()
     mock_claude.lock = asyncio.Lock()
     mock_claude.busy = False
-    mock_claude.send_with_model = AsyncMock(return_value="meaningful response")
+    mock_claude.send_heartbeat = AsyncMock(return_value="meaningful response")
 
     return {
         "claude": mock_claude,
@@ -560,11 +560,11 @@ def _make_dynamic_heartbeat_deps():
 async def test_heartbeat_uses_configured_model():
     """Heartbeat should use the configured default model."""
     deps = _make_dynamic_heartbeat_deps()
-    deps["claude"].send_with_model = AsyncMock(return_value="meaningful response")
+    deps["claude"].send_heartbeat = AsyncMock(return_value="meaningful response")
 
     await run_heartbeat_runner(**deps)
 
-    deps["claude"].send_with_model.assert_awaited_once_with(
+    deps["claude"].send_heartbeat.assert_awaited_once_with(
         "Heartbeat prompt", MODEL_HAIKU
     )
 
@@ -572,7 +572,7 @@ async def test_heartbeat_uses_configured_model():
 async def test_heartbeat_logs_model_usage():
     """Heartbeat should log model usage for cost tracking."""
     deps = _make_dynamic_heartbeat_deps()
-    deps["claude"].send_with_model = AsyncMock(return_value="meaningful response")
+    deps["claude"].send_heartbeat = AsyncMock(return_value="meaningful response")
 
     await run_heartbeat_runner(**deps)
 
@@ -588,15 +588,15 @@ async def test_heartbeat_escalates_on_uncertainty():
     """Heartbeat should escalate to Opus when Haiku signals uncertainty."""
     deps = _make_dynamic_heartbeat_deps()
     # First call returns uncertainty, second call returns meaningful response
-    deps["claude"].send_with_model = AsyncMock(
+    deps["claude"].send_heartbeat = AsyncMock(
         side_effect=["I'm not sure about this.", "Here is a detailed analysis."]
     )
 
     await run_heartbeat_runner(**deps)
 
-    # Should have called send_with_model twice - once with Haiku, once with Opus
-    assert deps["claude"].send_with_model.await_count == 2
-    calls = deps["claude"].send_with_model.call_args_list
+    # Should have called send_heartbeat twice - once with Haiku, once with Opus
+    assert deps["claude"].send_heartbeat.await_count == 2
+    calls = deps["claude"].send_heartbeat.call_args_list
     assert calls[0][0] == ("Heartbeat prompt", MODEL_HAIKU)
     assert calls[1][0] == ("Heartbeat prompt", MODEL_OPUS)
 
@@ -605,7 +605,7 @@ async def test_heartbeat_logs_escalated_usage():
     """Heartbeat should log both initial and escalated model usage."""
     deps = _make_dynamic_heartbeat_deps()
     # First call returns uncertainty, second call returns meaningful response
-    deps["claude"].send_with_model = AsyncMock(
+    deps["claude"].send_heartbeat = AsyncMock(
         side_effect=["I'm not sure about this.", "Here is a detailed analysis."]
     )
 
@@ -632,18 +632,18 @@ async def test_heartbeat_no_escalation_from_opus():
     """Heartbeat should not escalate when already using Opus."""
     deps = _make_dynamic_heartbeat_deps()
     deps["get_model_fn"] = MagicMock(return_value="opus")
-    deps["claude"].send_with_model = AsyncMock(return_value="I'm not sure about this.")
+    deps["claude"].send_heartbeat = AsyncMock(return_value="I'm not sure about this.")
 
     await run_heartbeat_runner(**deps)
 
     # Should only call once - no escalation from Opus
-    assert deps["claude"].send_with_model.await_count == 1
+    assert deps["claude"].send_heartbeat.await_count == 1
 
 
 async def test_heartbeat_sends_escalated_response():
     """Heartbeat should send the escalated response, not the uncertainty response."""
     deps = _make_dynamic_heartbeat_deps()
-    deps["claude"].send_with_model = AsyncMock(
+    deps["claude"].send_heartbeat = AsyncMock(
         side_effect=["I'm not sure about this.", "Here is your detailed answer."]
     )
 

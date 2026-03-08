@@ -39,6 +39,36 @@ def _load_system_prompt() -> str:
     return "You are Corphish, a personal AI assistant."
 
 
+def _build_heartbeat_options(
+    *,
+    model: str = _DEFAULT_MODEL,
+    heartbeat_prompt: str,
+) -> ClaudeAgentOptions:
+    """Builds lightweight ClaudeAgentOptions for heartbeat calls.
+
+    Uses a plain text system prompt (no claude_code preset) since the
+    heartbeat only needs to reflect and decide whether to say something —
+    it does not need file access, Bash, or other tools.
+
+    Args:
+        model: The model name to use.
+        heartbeat_prompt: The heartbeat-specific prompt (e.g. HEARTBEAT.md).
+
+    Returns:
+        Configured ClaudeAgentOptions without the claude_code preset.
+    """
+    identity = _load_system_prompt()
+    system_prompt = f"{identity}\n\n{heartbeat_prompt}"
+    return ClaudeAgentOptions(
+        system_prompt=system_prompt,
+        permission_mode="bypassPermissions",
+        disallowed_tools=list(_DISALLOWED_TOOLS),
+        model=model,
+        continue_conversation=False,
+        cwd=str(config.get_config_dir()),
+    )
+
+
 def _build_options(
     *,
     model: str = _DEFAULT_MODEL,
@@ -182,6 +212,45 @@ class ClaudeClient:
         async for message in self._query(
             prompt=user_text, options=self._options
         ):
+            if done:
+                continue
+            if isinstance(message, ResultMessage):
+                if message.result:
+                    result_text = message.result
+                done = True
+            elif isinstance(message, AssistantMessage):
+                parts = [
+                    block.text
+                    for block in message.content
+                    if isinstance(block, TextBlock)
+                ]
+                if parts:
+                    last_text = "\n".join(parts)
+
+        return result_text or last_text
+
+    async def send_heartbeat(self, heartbeat_prompt: str, model: str) -> str:
+        """Sends a heartbeat prompt using a lightweight, tool-free system prompt.
+
+        Skips the claude_code preset entirely — the heartbeat only needs to
+        reflect and decide whether to say something; it does not need tools.
+        Uses continue_conversation=False so it does not add to the main
+        conversation history.
+
+        Args:
+            heartbeat_prompt: The heartbeat prompt (e.g. HEARTBEAT.md content).
+            model: The model ID to use for this query.
+
+        Returns:
+            The text content of Claude's response.
+        """
+        options = _build_heartbeat_options(model=model, heartbeat_prompt=heartbeat_prompt)
+
+        last_text = ""
+        result_text = None
+        done = False
+
+        async for message in self._query(prompt=heartbeat_prompt, options=options):
             if done:
                 continue
             if isinstance(message, ResultMessage):

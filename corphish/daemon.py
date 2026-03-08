@@ -390,7 +390,7 @@ async def run_heartbeat_runner(
 
         try:
             async with claude.lock:
-                response = await claude.send_with_model(prompt, model_id)
+                response = await claude.send_heartbeat(prompt, model_id)
 
             # Log initial model usage
             await log_usage_fn(
@@ -406,7 +406,7 @@ async def run_heartbeat_runner(
                     "[heartbeat] Response signals uncertainty, escalating to Opus"
                 )
                 async with claude.lock:
-                    response = await claude.send_with_model(prompt, MODEL_OPUS)
+                    response = await claude.send_heartbeat(prompt, MODEL_OPUS)
 
                 # Log escalated usage
                 await log_usage_fn(
