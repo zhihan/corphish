@@ -250,7 +250,7 @@ class ClaudeClient:
         result_text = None
         done = False
 
-        async for message in self._query(prompt=heartbeat_prompt, options=options):
+        async for message in self._query(prompt="", options=options):
             if done:
                 continue
             if isinstance(message, ResultMessage):
