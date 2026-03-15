@@ -9,12 +9,13 @@ import pytest
 
 from corphish.daemon import (
     _get_model_for_name,
-    _is_trivial_response,
     _needs_escalation,
+    is_heartbeat_response,
     run_daemon,
     run_heartbeat_runner,
     run_message_consumer,
     run_message_processor,
+    strip_heartbeat_token,
 )
 from corphish.claude_client import MODEL_HAIKU, MODEL_OPUS, MODEL_SONNET
 
@@ -358,29 +359,70 @@ async def test_daemon_runs_consumer_and_processor_concurrently():
 # --- Trivial Response Detection Tests ---
 
 
-def test_is_trivial_response_empty():
-    """Empty responses are trivial."""
-    assert _is_trivial_response("") is True
-    assert _is_trivial_response("   ") is True
-    assert _is_trivial_response(None) is True
+def test_is_heartbeat_response_empty():
+    """Empty or None responses are heartbeats."""
+    assert is_heartbeat_response("") is True
+    assert is_heartbeat_response(None) is True
 
 
-def test_is_trivial_response_silence_patterns():
-    """Responses indicating silence should be trivial."""
-    assert _is_trivial_response("No message needed.") is True
-    assert _is_trivial_response("Nothing to say right now.") is True
-    assert _is_trivial_response("Staying silent.") is True
-    assert _is_trivial_response("I'll stay silent on this one.") is True
-    assert _is_trivial_response("No response necessary.") is True
-    assert _is_trivial_response("No update at this time.") is True
-    assert _is_trivial_response("Silence") is True
+def test_is_heartbeat_response_contains_token():
+    """Responses containing HEARTBEAT_OK and ≤ 500 chars are heartbeats."""
+    assert is_heartbeat_response("HEARTBEAT_OK") is True
+    assert is_heartbeat_response("HEARTBEAT_OK — all clear") is True
+    assert is_heartbeat_response("I'll say HEARTBEAT_OK since nothing to report.") is True
 
 
-def test_is_trivial_response_non_trivial():
-    """Meaningful responses should not be trivial."""
-    assert _is_trivial_response("Remember to submit your report by 5pm.") is False
-    assert _is_trivial_response("I noticed an error in the build logs.") is False
-    assert _is_trivial_response("Your meeting starts in 10 minutes.") is False
+def test_is_heartbeat_response_real_content():
+    """Real messages without HEARTBEAT_OK are not heartbeats."""
+    assert is_heartbeat_response("Your meeting is in 10 minutes.") is False
+    assert is_heartbeat_response("I noticed an error in the logs.") is False
+
+
+def test_is_heartbeat_response_long_with_token():
+    """Long responses containing HEARTBEAT_OK are not suppressed by this check."""
+    long_response = "HEARTBEAT_OK " + "x" * 500
+    assert is_heartbeat_response(long_response) is False  # > 500 chars
+
+
+def test_strip_heartbeat_token_empty():
+    """Empty or whitespace-only responses return None."""
+    assert strip_heartbeat_token("") is None
+    assert strip_heartbeat_token("   ") is None
+    assert strip_heartbeat_token(None) is None
+
+
+def test_strip_heartbeat_token_bare():
+    """Bare HEARTBEAT_OK (with or without surrounding noise) returns None."""
+    assert strip_heartbeat_token("HEARTBEAT_OK") is None
+    assert strip_heartbeat_token("HEARTBEAT_OK.") is None
+    assert strip_heartbeat_token("  HEARTBEAT_OK  ") is None
+
+
+def test_strip_heartbeat_token_with_narration():
+    """Responses that narrate around HEARTBEAT_OK are suppressed."""
+    assert strip_heartbeat_token("HEARTBEAT_OK — nothing to report") is None
+    assert strip_heartbeat_token("HEARTBEAT_OK. Staying silent.") is None
+    assert strip_heartbeat_token("I'll respond with HEARTBEAT_OK since there's nothing to report.") is None
+
+
+def test_strip_heartbeat_token_ack_phrases():
+    """Short acknowledgment phrases without HEARTBEAT_OK are suppressed."""
+    assert strip_heartbeat_token("No message needed.") is None
+    assert strip_heartbeat_token("All clear.") is None
+    assert strip_heartbeat_token("Nothing to report.") is None
+    assert strip_heartbeat_token("No updates.") is None
+
+
+def test_strip_heartbeat_token_real_content():
+    """Real content passes through with HEARTBEAT_OK stripped."""
+    assert strip_heartbeat_token("Your meeting is in 10 minutes.") == "Your meeting is in 10 minutes."
+    assert strip_heartbeat_token("I noticed an error in the build logs.") == "I noticed an error in the build logs."
+
+
+def test_strip_heartbeat_token_strips_from_mixed():
+    """HEARTBEAT_OK is removed when real content is also present."""
+    result = strip_heartbeat_token("HEARTBEAT_OK Your meeting is in 10 minutes.")
+    assert result == "Your meeting is in 10 minutes."
 
 
 # --- Heartbeat Runner Tests ---
