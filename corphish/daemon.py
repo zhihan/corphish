@@ -1,7 +1,9 @@
 """Daemon components: message consumer, processor, heartbeat, and integration via SQLite."""
 
 import asyncio
+import html
 import logging
+import re
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -266,49 +268,83 @@ async def run_message_processor(
         await asyncio.sleep(1)
 
 
-def _is_trivial_response(response: str) -> bool:
-    """Determines if a heartbeat response is trivial and should be suppressed.
+_HEARTBEAT_TOKEN = "HEARTBEAT_OK"
 
-    A response is trivial if it's empty, just whitespace, explicitly
-    indicates the assistant chose to stay silent, or contains generic
-    greetings/status messages that shouldn't appear in heartbeats.
+_ACK_PHRASES = frozenset([
+    "ok", "okay", "acknowledged", "noted",
+    "nothing to report", "nothing to say", "nothing new", "no updates",
+    "all clear", "no action needed", "no message", "no issues",
+    "silence", "staying silent", "remain silent", "nothing worth",
+    "no response", "no update", "waiting for",
+    "i'm ready", "ready to", "all set",
+])
+
+
+def is_heartbeat_response(response: str) -> bool:
+    """Returns True if the response is a heartbeat acknowledgment to be suppressed.
+
+    A fast check: if the response contains HEARTBEAT_OK and is short (≤ 500
+    characters), treat it as a heartbeat acknowledgment rather than real
+    content — even if Claude narrated around the token.
 
     Args:
         response: The response text from Claude.
 
     Returns:
-        True if the response should be suppressed, False if it should be sent.
+        True if the response should be treated as a heartbeat (suppress delivery).
+    """
+    if not response:
+        return True
+    return _HEARTBEAT_TOKEN in response and len(response) <= 500
+
+
+def strip_heartbeat_token(response: str) -> Optional[str]:
+    """Strips the HEARTBEAT_OK token and surrounding LLM narration.
+
+    Returns None if nothing meaningful remains (suppress), or the content
+    to deliver if real content is present. Processing steps:
+    1. Normalize: unescape HTML entities, strip HTML tags and markdown.
+    2. Strip HEARTBEAT_OK and surrounding punctuation/whitespace.
+    3. Collapse whitespace.
+    4. Suppress if nothing remains.
+    5. Suppress if only a short acknowledgment phrase remains.
+    6. Otherwise return the cleaned text for delivery.
+
+    Args:
+        response: The response text from Claude.
+
+    Returns:
+        None if the response should be suppressed, or the content to deliver.
     """
     if not response or not response.strip():
-        return True
+        return None
 
-    # Common patterns indicating intentional silence or generic responses
-    lowered = response.lower().strip()
-    trivial_patterns = [
-        # Explicit silence indicators
-        "no message",
-        "nothing to say",
-        "nothing to output",
-        "staying silent",
-        "stay silent",
-        "no response",
-        "no update",
-        "silence",
-        # Waiting/status messages
-        "waiting for",
-        "waiting on",
-        # Generic greetings/status (inappropriate for heartbeats)
-        "i'm ready",
-        "ready to",
-        "what would you like",
-        "what can i",
-        "how can i help",
-        "what would you like me to",
-        "i have your",
-        "context loaded",
-        "available for",
-    ]
-    return any(pattern in lowered for pattern in trivial_patterns)
+    # Strip HEARTBEAT_OK first (before markdown normalization, which would
+    # destroy the underscore and prevent the token from being recognised)
+    text = re.sub(
+        r"[\s.,;:!\-\u2013\u2014]*HEARTBEAT_OK[\s.,;:!\-\u2013\u2014]*",
+        " ",
+        response,
+        flags=re.IGNORECASE,
+    )
+
+    # Normalize: unescape HTML, strip tags and markdown formatting
+    text = html.unescape(text)
+    text = re.sub(r"<[^>]+>", "", text)           # strip HTML tags
+    text = re.sub(r"[*_`#~]+", "", text)           # strip markdown formatting
+
+    # Collapse whitespace
+    text = re.sub(r"\s+", " ", text).strip()
+
+    if not text:
+        return None
+
+    # Suppress short acknowledgment phrases
+    lowered = text.lower()
+    if len(text) <= 120 and any(phrase in lowered for phrase in _ACK_PHRASES):
+        return None
+
+    return text
 
 
 def _needs_escalation(response: str) -> bool:
@@ -459,16 +495,17 @@ async def run_heartbeat_runner(
             continue
 
         # Only surface non-trivial responses
-        if _is_trivial_response(response):
+        message_text = strip_heartbeat_token(response)
+        if message_text is None:
             logger.info("[heartbeat] Response was trivial, suppressing")
         else:
             if escalated:
                 logger.info(
-                    "[heartbeat] Sending escalated response: %s", response[:50]
+                    "[heartbeat] Sending escalated response: %s", message_text[:50]
                 )
             else:
-                logger.info("[heartbeat] Sending response: %s", response[:50])
-            await insert_outgoing_fn(text=response, db_path=db_path)
+                logger.info("[heartbeat] Sending response: %s", message_text[:50])
+            await insert_outgoing_fn(text=message_text, db_path=db_path)
 
         if once:
             break
