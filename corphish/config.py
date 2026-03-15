@@ -152,3 +152,12 @@ def get_max_conversation_turns() -> int:
         The max_conversation_turns value from config, or 30 if not set.
     """
     return load_config().get("max_conversation_turns", _DEFAULT_MAX_CONVERSATION_TURNS)
+
+
+def get_timezone() -> str:
+    """Returns the configured timezone string, or empty string for system local.
+
+    Returns:
+        The timezone value from config (e.g. "America/New_York"), or "" if not set.
+    """
+    return load_config().get("timezone", "")

@@ -4,18 +4,24 @@ import asyncio
 import html
 import logging
 import re
+import time
 from pathlib import Path
 from typing import Callable, Optional
 
 from telegram import Bot
 
 from . import chat, config, db
+from . import cron as cron_module
 from .claude_client import ClaudeClient, MODEL_HAIKU, MODEL_OPUS, MODEL_SONNET
 
 logger = logging.getLogger(__name__)
 
 _BACKOFF_BASE = 1
 _BACKOFF_MAX = 60
+
+_running_cron_tasks: set = set()
+_CRON_LOCK_TIMEOUT = 300  # 5 minutes
+_CRON_CATCH_UP_WINDOW = 300  # 5 minutes — don't fire jobs missed by more than this
 
 
 def _load_heartbeat_prompt() -> str:
@@ -511,6 +517,161 @@ async def run_heartbeat_runner(
             break
 
 
+async def _run_cron_job(
+    job: dict,
+    *,
+    claude: ClaudeClient,
+    send_message_fn: Callable,
+    bot,
+    chat_id: int,
+    db_path,
+) -> None:
+    """Executes a single cron job: calls Claude and delivers a non-trivial response.
+
+    Args:
+        job: The cron job dict from the database.
+        claude: A ClaudeClient instance.
+        send_message_fn: Sends a message via Telegram.
+        bot: The Telegram Bot instance.
+        chat_id: The Telegram chat ID.
+        db_path: Path to the database file.
+    """
+    ran_at = int(time.time())
+    try:
+        try:
+            async with asyncio.timeout(_CRON_LOCK_TIMEOUT):
+                async with claude.lock:
+                    response = await claude.send_heartbeat(job["prompt"], MODEL_SONNET)
+        except TimeoutError:
+            logger.warning("[cron] Job %r timed out waiting for lock, skipping", job["name"])
+            await db.insert_cron_job_run(
+                job["id"], ran_at, "skipped", "suppressed", db_path=db_path
+            )
+            return
+
+        message_text = strip_heartbeat_token(response)
+        if message_text:
+            await send_message_fn(bot, chat_id, message_text)
+            delivered = "delivered"
+        else:
+            delivered = "suppressed"
+
+        await db.insert_cron_job_run(
+            job["id"], ran_at, "completed", delivered,
+            response[:200] if response else None,
+            db_path=db_path,
+        )
+        logger.info("[cron] Job %r completed, delivered=%s", job["name"], delivered)
+
+    except Exception:
+        logger.exception("[cron] Job %r failed", job["name"])
+        await db.insert_cron_job_run(
+            job["id"], ran_at, "error", "suppressed", db_path=db_path
+        )
+
+
+async def run_cron_scheduler(
+    *,
+    get_token_fn: Callable = chat.get_bot_token,
+    build_bot_fn: Callable = chat.build_bot,
+    load_config_fn: Callable = config.load_config,
+    send_message_fn: Callable = chat.send_message,
+    claude: ClaudeClient,
+    once: bool = False,
+    db_path=None,
+    get_timezone_fn: Callable = config.get_timezone,
+    get_due_jobs_fn: Callable = db.get_due_cron_jobs,
+    update_next_run_fn: Callable = db.update_cron_job_next_run,
+    disable_job_fn: Callable = db.disable_cron_job,
+    advance_stale_fn: Callable = db.advance_stale_cron_jobs,
+) -> None:
+    """Runs the cron scheduler loop.
+
+    Polls for due cron jobs every 30 seconds, dispatches them as background
+    tasks, and updates their next scheduled run times.
+
+    Args:
+        get_token_fn: Returns the Telegram bot token.
+        build_bot_fn: Builds a Bot from a token.
+        load_config_fn: Returns the current config dict.
+        send_message_fn: Sends a message via Telegram.
+        claude: A ClaudeClient instance.
+        once: If True, run one iteration and return (for testing).
+        db_path: Path to the database file.
+        get_timezone_fn: Returns the configured timezone string.
+        get_due_jobs_fn: Returns due cron jobs from the database.
+        update_next_run_fn: Updates the next_run_epoch for a cron job.
+        disable_job_fn: Disables a cron job.
+        advance_stale_fn: Returns stale cron jobs for normalization.
+    """
+    token = get_token_fn()
+    bot = build_bot_fn(token)
+    cfg = load_config_fn()
+    chat_id = cfg["chat_id"]
+    tz = get_timezone_fn() or None
+
+    logger.info("Cron scheduler started")
+
+    # Startup normalization: advance stale next_run_epoch values
+    now = int(time.time())
+    cutoff = now - _CRON_CATCH_UP_WINDOW
+    stale_jobs = await advance_stale_fn(cutoff, db_path=db_path)
+    for job in stale_jobs:
+        next_run = cron_module.cron_next_run(job["cron_expr"], now, tz)
+        await update_next_run_fn(job["id"], next_run, db_path=db_path)
+        logger.info("[cron] Normalized stale job %r → next run at %d", job["name"], next_run)
+
+    while True:
+        await asyncio.sleep(30)
+
+        now = int(time.time())
+        tz = get_timezone_fn() or None
+        due_jobs = await get_due_jobs_fn(now, db_path=db_path)
+
+        for job in due_jobs:
+            # Verify the cron expression actually fired within the last poll
+            # window. If the previous scheduled time is more than 2× the poll
+            # interval ago, the job was inserted with next_run_epoch=unixepoch()
+            # (i.e. "now") rather than a real scheduled time — advance it instead
+            # of firing immediately.
+            _POLL_INTERVAL = 30
+            prev_fire = cron_module.cron_prev_run(job["cron_expr"], now, tz)
+            if now - prev_fire > _POLL_INTERVAL * 2:
+                # Not a genuine fire window — compute actual next occurrence
+                next_run = cron_module.cron_next_run(job["cron_expr"], now, tz)
+                await update_next_run_fn(job["id"], next_run, db_path=db_path)
+                logger.info(
+                    "[cron] Job %r inserted with next_run=now, advanced to %d",
+                    job["name"], next_run,
+                )
+                continue
+
+            # Advance next_run_epoch BEFORE dispatching (prevents double-fire)
+            if job["schedule_type"] == "once":
+                await disable_job_fn(job["id"], db_path=db_path)
+            else:
+                next_run = cron_module.cron_next_run(job["cron_expr"], now, tz)
+                await update_next_run_fn(job["id"], next_run, db_path=db_path)
+
+            # Dispatch as background task
+            task = asyncio.create_task(
+                _run_cron_job(
+                    job,
+                    claude=claude,
+                    send_message_fn=send_message_fn,
+                    bot=bot,
+                    chat_id=chat_id,
+                    db_path=db_path,
+                )
+            )
+            _running_cron_tasks.add(task)
+            task.add_done_callback(_running_cron_tasks.discard)
+            logger.info("[cron] Dispatched job %r", job["name"])
+
+        if once:
+            break
+
+
 async def run_daemon(
     *,
     get_token_fn: Callable = chat.get_bot_token,
@@ -524,12 +685,14 @@ async def run_daemon(
     save_offset_fn: Callable = config.save_update_offset,
     db_path: Optional[Path] = None,
     enable_heartbeat: bool = True,
+    enable_cron: bool = True,
 ) -> None:
-    """Runs message consumer, processor, and heartbeat runner concurrently.
+    """Runs message consumer, processor, heartbeat runner, and cron scheduler concurrently.
 
     This is the main entry point that starts the message consumer
     (polls Telegram), message processor (polls DB, processes via Claude),
-    and heartbeat runner (periodic check-ins) loops concurrently.
+    heartbeat runner (periodic check-ins), and cron scheduler (scheduled jobs)
+    loops concurrently.
 
     Args:
         get_token_fn: Returns the Telegram bot token.
@@ -543,6 +706,7 @@ async def run_daemon(
         save_offset_fn: Persists the update offset.
         db_path: Path to the database file.
         enable_heartbeat: If True, run the heartbeat runner (default True).
+        enable_cron: If True, run the cron scheduler (default True).
     """
     # Initialize database
     await db.init_db(db_path)
@@ -578,6 +742,15 @@ async def run_daemon(
     if enable_heartbeat:
         tasks.append(
             run_heartbeat_runner(
+                claude=client,
+                once=once,
+                db_path=db_path,
+            )
+        )
+
+    if enable_cron:
+        tasks.append(
+            run_cron_scheduler(
                 claude=client,
                 once=once,
                 db_path=db_path,
