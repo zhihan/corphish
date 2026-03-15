@@ -193,6 +193,11 @@ async def run_message_processor(
                     db_path=db_path,
                 )
             else:
+                # Mark processed before streaming so a mid-stream restart
+                # (e.g. Claude restarting its own daemon) cannot cause the
+                # same message to be picked up and processed again.
+                await mark_processed_fn(message["id"], db_path=db_path)
+
                 try:
                     async with client.lock:
                         async for chunk in client.stream(user_text):
@@ -225,16 +230,12 @@ async def run_message_processor(
                     logger.exception(
                         "Claude streaming failed for message: %s", user_text
                     )
-                    await mark_processed_fn(message["id"], db_path=db_path)
                     continue
                 except asyncio.CancelledError:
                     logger.warning(
                         "Claude streaming cancelled for message: %s", user_text
                     )
-                    await mark_processed_fn(message["id"], db_path=db_path)
                     continue
-
-                await mark_processed_fn(message["id"], db_path=db_path)
 
                 turn_count += 1
                 if turn_count >= get_max_turns_fn():
@@ -268,8 +269,9 @@ async def run_message_processor(
 def _is_trivial_response(response: str) -> bool:
     """Determines if a heartbeat response is trivial and should be suppressed.
 
-    A response is trivial if it's empty, just whitespace, or explicitly
-    indicates the assistant chose to stay silent.
+    A response is trivial if it's empty, just whitespace, explicitly
+    indicates the assistant chose to stay silent, or contains generic
+    greetings/status messages that shouldn't appear in heartbeats.
 
     Args:
         response: The response text from Claude.
@@ -280,16 +282,31 @@ def _is_trivial_response(response: str) -> bool:
     if not response or not response.strip():
         return True
 
-    # Common patterns indicating intentional silence
+    # Common patterns indicating intentional silence or generic responses
     lowered = response.lower().strip()
     trivial_patterns = [
+        # Explicit silence indicators
         "no message",
         "nothing to say",
+        "nothing to output",
         "staying silent",
         "stay silent",
         "no response",
         "no update",
         "silence",
+        # Waiting/status messages
+        "waiting for",
+        "waiting on",
+        # Generic greetings/status (inappropriate for heartbeats)
+        "i'm ready",
+        "ready to",
+        "what would you like",
+        "what can i",
+        "how can i help",
+        "what would you like me to",
+        "i have your",
+        "context loaded",
+        "available for",
     ]
     return any(pattern in lowered for pattern in trivial_patterns)
 
