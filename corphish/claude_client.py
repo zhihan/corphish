@@ -28,15 +28,26 @@ _DISALLOWED_TOOLS = ["EnterPlanMode", "ExitPlanMode", "AskUserQuestion"]
 
 
 def _load_system_prompt() -> str:
-    """Loads the system prompt from IDENTITY.md.
+    """Loads the system prompt from IDENTITY.md and any skill documents.
 
     Returns:
-        The contents of IDENTITY.md, or a minimal fallback.
+        The combined contents of IDENTITY.md and skill documents like CRON.md.
     """
-    identity_path = Path(__file__).parent.parent / "IDENTITY.md"
-    if identity_path.exists():
-        return identity_path.read_text()
-    return "You are Corphish, a personal AI assistant."
+    root = Path(__file__).parent.parent
+    identity_path = root / "IDENTITY.md"
+    identity = (
+        identity_path.read_text() if identity_path.exists()
+        else "You are Corphish, a personal AI assistant."
+    )
+
+    # Append skill documents
+    parts = [identity]
+    for skill_file in ["CRON.md"]:
+        skill_path = root / skill_file
+        if skill_path.exists():
+            parts.append(skill_path.read_text())
+
+    return "\n\n---\n\n".join(parts)
 
 
 def _build_heartbeat_options(
