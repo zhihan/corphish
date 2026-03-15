@@ -629,6 +629,23 @@ async def run_cron_scheduler(
         due_jobs = await get_due_jobs_fn(now, db_path=db_path)
 
         for job in due_jobs:
+            # Verify the cron expression actually fired within the last poll
+            # window. If the previous scheduled time is more than 2× the poll
+            # interval ago, the job was inserted with next_run_epoch=unixepoch()
+            # (i.e. "now") rather than a real scheduled time — advance it instead
+            # of firing immediately.
+            _POLL_INTERVAL = 30
+            prev_fire = cron_module.cron_prev_run(job["cron_expr"], now, tz)
+            if now - prev_fire > _POLL_INTERVAL * 2:
+                # Not a genuine fire window — compute actual next occurrence
+                next_run = cron_module.cron_next_run(job["cron_expr"], now, tz)
+                await update_next_run_fn(job["id"], next_run, db_path=db_path)
+                logger.info(
+                    "[cron] Job %r inserted with next_run=now, advanced to %d",
+                    job["name"], next_run,
+                )
+                continue
+
             # Advance next_run_epoch BEFORE dispatching (prevents double-fire)
             if job["schedule_type"] == "once":
                 await disable_job_fn(job["id"], db_path=db_path)

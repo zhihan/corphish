@@ -11,7 +11,7 @@ Jobs are stored in the SQLite database and executed by the cron scheduler daemon
 - `prompt` — the prompt sent to Claude when the job fires
 - `cron_expr` — 5-field cron expression (minute hour dom month dow)
 - `schedule_type` — `'recurring'` (default) or `'once'`
-- `next_run_epoch` — unix timestamp of next fire (set to `unixepoch()` when creating)
+- `next_run_epoch` — unix timestamp of next fire; the scheduler computes the real next occurrence from `cron_expr` automatically, so set to `unixepoch()` on insert
 - `enabled` — `1` = active, `0` = disabled
 
 **cron_job_runs** — execution history
