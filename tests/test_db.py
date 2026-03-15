@@ -7,18 +7,24 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from corphish.db import (
+    advance_stale_cron_jobs,
+    disable_cron_job,
+    get_all_cron_jobs,
     get_db_path,
+    get_due_cron_jobs,
     get_latest_outgoing_id,
     get_model_usage_summary,
     get_next_unprocessed_message,
     get_outgoing_messages_after,
     get_unsent_outgoing_messages,
     init_db,
+    insert_cron_job_run,
     insert_incoming_message,
     insert_outgoing_message,
     log_model_usage,
     mark_message_processed,
     mark_outgoing_message_sent,
+    update_cron_job_next_run,
 )
 
 
@@ -402,3 +408,259 @@ async def test_get_model_usage_summary(temp_db):
     assert opus_heartbeat is not None
     assert opus_heartbeat["count"] == 1
     assert opus_heartbeat["escalated_count"] == 1
+
+
+# --- Cron Job Tests ---
+
+
+async def _insert_test_cron_job(
+    db_path,
+    name="test-job",
+    prompt="Test prompt",
+    cron_expr="0 9 * * *",
+    schedule_type="recurring",
+    next_run_epoch=9999999999,
+    enabled=1,
+):
+    """Helper to insert a cron job for testing."""
+    import aiosqlite
+    from datetime import datetime, timezone
+
+    async with aiosqlite.connect(db_path) as db:
+        cursor = await db.execute(
+            """
+            INSERT INTO cron_jobs (name, prompt, cron_expr, schedule_type, next_run_epoch, enabled, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                name,
+                prompt,
+                cron_expr,
+                schedule_type,
+                next_run_epoch,
+                enabled,
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def test_init_db_creates_cron_tables(tmp_path):
+    """init_db() should create cron_jobs and cron_job_runs tables."""
+    db_path = tmp_path / "test.db"
+    await init_db(db_path)
+
+    import aiosqlite
+
+    async with aiosqlite.connect(db_path) as db:
+        cursor = await db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='cron_jobs'"
+        )
+        row = await cursor.fetchone()
+        assert row is not None
+
+        cursor = await db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='cron_job_runs'"
+        )
+        row = await cursor.fetchone()
+        assert row is not None
+
+
+async def test_get_due_cron_jobs_empty(temp_db):
+    """get_due_cron_jobs() returns empty list when no jobs are due."""
+    jobs = await get_due_cron_jobs(int(1e9), db_path=temp_db)
+    assert jobs == []
+
+
+async def test_get_due_cron_jobs_returns_due(temp_db):
+    """get_due_cron_jobs() returns jobs whose next_run_epoch <= now."""
+    past_epoch = 1000  # far in the past
+    job_id = await _insert_test_cron_job(temp_db, next_run_epoch=past_epoch)
+
+    now = 9999999999
+    jobs = await get_due_cron_jobs(now, db_path=temp_db)
+
+    assert len(jobs) == 1
+    assert jobs[0]["id"] == job_id
+    assert jobs[0]["name"] == "test-job"
+
+
+async def test_get_due_cron_jobs_excludes_future(temp_db):
+    """get_due_cron_jobs() does not return jobs scheduled in the future."""
+    future_epoch = 9999999999
+    await _insert_test_cron_job(temp_db, next_run_epoch=future_epoch)
+
+    now = 1000  # now is in the distant past relative to job
+    jobs = await get_due_cron_jobs(now, db_path=temp_db)
+
+    assert jobs == []
+
+
+async def test_get_due_cron_jobs_excludes_disabled(temp_db):
+    """get_due_cron_jobs() should not return disabled jobs."""
+    past_epoch = 1000
+    await _insert_test_cron_job(temp_db, next_run_epoch=past_epoch, enabled=0)
+
+    now = 9999999999
+    jobs = await get_due_cron_jobs(now, db_path=temp_db)
+
+    assert jobs == []
+
+
+async def test_update_cron_job_next_run(temp_db):
+    """update_cron_job_next_run() should update the next_run_epoch."""
+    job_id = await _insert_test_cron_job(temp_db, next_run_epoch=1000)
+
+    await update_cron_job_next_run(job_id, 5000, db_path=temp_db)
+
+    import aiosqlite
+
+    async with aiosqlite.connect(temp_db) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT next_run_epoch FROM cron_jobs WHERE id = ?", (job_id,)
+        )
+        row = await cursor.fetchone()
+        assert row["next_run_epoch"] == 5000
+
+
+async def test_disable_cron_job(temp_db):
+    """disable_cron_job() should set enabled=0."""
+    job_id = await _insert_test_cron_job(temp_db, enabled=1)
+
+    await disable_cron_job(job_id, db_path=temp_db)
+
+    import aiosqlite
+
+    async with aiosqlite.connect(temp_db) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT enabled FROM cron_jobs WHERE id = ?", (job_id,)
+        )
+        row = await cursor.fetchone()
+        assert row["enabled"] == 0
+
+
+async def test_insert_cron_job_run(temp_db):
+    """insert_cron_job_run() should insert a run record."""
+    job_id = await _insert_test_cron_job(temp_db)
+
+    run_id = await insert_cron_job_run(
+        job_id=job_id,
+        ran_at=1234567890,
+        status="completed",
+        delivered="delivered",
+        response_preview="Hello world",
+        db_path=temp_db,
+    )
+
+    assert run_id > 0
+
+    import aiosqlite
+
+    async with aiosqlite.connect(temp_db) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM cron_job_runs WHERE id = ?", (run_id,)
+        )
+        row = await cursor.fetchone()
+        assert row is not None
+        assert row["job_id"] == job_id
+        assert row["ran_at"] == 1234567890
+        assert row["status"] == "completed"
+        assert row["delivered"] == "delivered"
+        assert row["response_preview"] == "Hello world"
+        assert row["error"] is None
+
+
+async def test_insert_cron_job_run_error(temp_db):
+    """insert_cron_job_run() should store error messages."""
+    job_id = await _insert_test_cron_job(temp_db)
+
+    run_id = await insert_cron_job_run(
+        job_id=job_id,
+        ran_at=1234567890,
+        status="error",
+        delivered="suppressed",
+        error="Something went wrong",
+        db_path=temp_db,
+    )
+
+    import aiosqlite
+
+    async with aiosqlite.connect(temp_db) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM cron_job_runs WHERE id = ?", (run_id,)
+        )
+        row = await cursor.fetchone()
+        assert row["status"] == "error"
+        assert row["error"] == "Something went wrong"
+
+
+async def test_get_all_cron_jobs_empty(temp_db):
+    """get_all_cron_jobs() returns empty list when no jobs exist."""
+    jobs = await get_all_cron_jobs(db_path=temp_db)
+    assert jobs == []
+
+
+async def test_get_all_cron_jobs_ordered_by_name(temp_db):
+    """get_all_cron_jobs() returns all jobs ordered by name."""
+    await _insert_test_cron_job(temp_db, name="z-job", next_run_epoch=1000)
+    await _insert_test_cron_job(temp_db, name="a-job", next_run_epoch=2000)
+    await _insert_test_cron_job(temp_db, name="m-job", next_run_epoch=3000)
+
+    jobs = await get_all_cron_jobs(db_path=temp_db)
+
+    assert len(jobs) == 3
+    assert jobs[0]["name"] == "a-job"
+    assert jobs[1]["name"] == "m-job"
+    assert jobs[2]["name"] == "z-job"
+
+
+async def test_get_all_cron_jobs_includes_disabled(temp_db):
+    """get_all_cron_jobs() should return both enabled and disabled jobs."""
+    await _insert_test_cron_job(temp_db, name="enabled-job", enabled=1)
+    await _insert_test_cron_job(temp_db, name="disabled-job", enabled=0)
+
+    jobs = await get_all_cron_jobs(db_path=temp_db)
+
+    assert len(jobs) == 2
+
+
+async def test_advance_stale_cron_jobs_empty(temp_db):
+    """advance_stale_cron_jobs() returns empty list when no stale jobs exist."""
+    stale = await advance_stale_cron_jobs(1000, db_path=temp_db)
+    assert stale == []
+
+
+async def test_advance_stale_cron_jobs_returns_stale(temp_db):
+    """advance_stale_cron_jobs() returns enabled jobs older than cutoff."""
+    old_epoch = 500
+    job_id = await _insert_test_cron_job(temp_db, next_run_epoch=old_epoch)
+
+    stale = await advance_stale_cron_jobs(1000, db_path=temp_db)
+
+    assert len(stale) == 1
+    assert stale[0]["id"] == job_id
+
+
+async def test_advance_stale_cron_jobs_excludes_recent(temp_db):
+    """advance_stale_cron_jobs() does not return jobs newer than cutoff."""
+    recent_epoch = 2000
+    await _insert_test_cron_job(temp_db, next_run_epoch=recent_epoch)
+
+    stale = await advance_stale_cron_jobs(1000, db_path=temp_db)
+
+    assert stale == []
+
+
+async def test_advance_stale_cron_jobs_excludes_disabled(temp_db):
+    """advance_stale_cron_jobs() does not return disabled stale jobs."""
+    old_epoch = 500
+    await _insert_test_cron_job(temp_db, next_run_epoch=old_epoch, enabled=0)
+
+    stale = await advance_stale_cron_jobs(1000, db_path=temp_db)
+
+    assert stale == []

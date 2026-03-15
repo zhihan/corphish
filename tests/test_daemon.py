@@ -11,6 +11,7 @@ from corphish.daemon import (
     _get_model_for_name,
     _needs_escalation,
     is_heartbeat_response,
+    run_cron_scheduler,
     run_daemon,
     run_heartbeat_runner,
     run_message_consumer,
@@ -309,17 +310,18 @@ async def test_daemon_initializes_database(tmp_path):
     with patch("corphish.daemon.run_message_consumer", new=AsyncMock()):
         with patch("corphish.daemon.run_message_processor", new=AsyncMock()):
             with patch("corphish.daemon.run_heartbeat_runner", new=AsyncMock()):
-                await run_daemon(
-                    get_token_fn=MagicMock(return_value="tok"),
-                    build_bot_fn=MagicMock(return_value=MagicMock()),
-                    load_config_fn=MagicMock(return_value={"chat_id": 42}),
-                    send_message_fn=AsyncMock(),
-                    poll_fn=AsyncMock(return_value=[]),
-                    once=True,
-                    get_offset_fn=MagicMock(return_value=0),
-                    save_offset_fn=MagicMock(),
-                    db_path=db_path,
-                )
+                with patch("corphish.daemon.run_cron_scheduler", new=AsyncMock()):
+                    await run_daemon(
+                        get_token_fn=MagicMock(return_value="tok"),
+                        build_bot_fn=MagicMock(return_value=MagicMock()),
+                        load_config_fn=MagicMock(return_value={"chat_id": 42}),
+                        send_message_fn=AsyncMock(),
+                        poll_fn=AsyncMock(return_value=[]),
+                        once=True,
+                        get_offset_fn=MagicMock(return_value=0),
+                        save_offset_fn=MagicMock(),
+                        db_path=db_path,
+                    )
 
     # Database file should exist
     assert db_path.exists()
@@ -341,16 +343,17 @@ async def test_daemon_runs_consumer_and_processor_concurrently():
     with patch("corphish.daemon.run_message_consumer", new=mock_consumer):
         with patch("corphish.daemon.run_message_processor", new=mock_processor):
             with patch("corphish.daemon.run_heartbeat_runner", new=AsyncMock()):
-                await run_daemon(
-                    get_token_fn=MagicMock(return_value="tok"),
-                    build_bot_fn=MagicMock(return_value=MagicMock()),
-                    load_config_fn=MagicMock(return_value={"chat_id": 42}),
-                    send_message_fn=AsyncMock(),
-                    poll_fn=AsyncMock(return_value=[]),
-                    once=True,
-                    get_offset_fn=MagicMock(return_value=0),
-                    save_offset_fn=MagicMock(),
-                )
+                with patch("corphish.daemon.run_cron_scheduler", new=AsyncMock()):
+                    await run_daemon(
+                        get_token_fn=MagicMock(return_value="tok"),
+                        build_bot_fn=MagicMock(return_value=MagicMock()),
+                        load_config_fn=MagicMock(return_value={"chat_id": 42}),
+                        send_message_fn=AsyncMock(),
+                        poll_fn=AsyncMock(return_value=[]),
+                        once=True,
+                        get_offset_fn=MagicMock(return_value=0),
+                        save_offset_fn=MagicMock(),
+                    )
 
     assert consumer_called
     assert processor_called
@@ -536,17 +539,18 @@ async def test_daemon_includes_heartbeat_runner():
     with patch("corphish.daemon.run_message_consumer", new=mock_consumer):
         with patch("corphish.daemon.run_message_processor", new=mock_processor):
             with patch("corphish.daemon.run_heartbeat_runner", new=mock_heartbeat):
-                await run_daemon(
-                    get_token_fn=MagicMock(return_value="tok"),
-                    build_bot_fn=MagicMock(return_value=MagicMock()),
-                    load_config_fn=MagicMock(return_value={"chat_id": 42}),
-                    send_message_fn=AsyncMock(),
-                    poll_fn=AsyncMock(return_value=[]),
-                    once=True,
-                    get_offset_fn=MagicMock(return_value=0),
-                    save_offset_fn=MagicMock(),
-                    enable_heartbeat=True,
-                )
+                with patch("corphish.daemon.run_cron_scheduler", new=AsyncMock()):
+                    await run_daemon(
+                        get_token_fn=MagicMock(return_value="tok"),
+                        build_bot_fn=MagicMock(return_value=MagicMock()),
+                        load_config_fn=MagicMock(return_value={"chat_id": 42}),
+                        send_message_fn=AsyncMock(),
+                        poll_fn=AsyncMock(return_value=[]),
+                        once=True,
+                        get_offset_fn=MagicMock(return_value=0),
+                        save_offset_fn=MagicMock(),
+                        enable_heartbeat=True,
+                    )
 
     assert consumer_called
     assert processor_called
@@ -564,17 +568,18 @@ async def test_daemon_can_disable_heartbeat():
     with patch("corphish.daemon.run_message_consumer", new=AsyncMock()):
         with patch("corphish.daemon.run_message_processor", new=AsyncMock()):
             with patch("corphish.daemon.run_heartbeat_runner", new=mock_heartbeat):
-                await run_daemon(
-                    get_token_fn=MagicMock(return_value="tok"),
-                    build_bot_fn=MagicMock(return_value=MagicMock()),
-                    load_config_fn=MagicMock(return_value={"chat_id": 42}),
-                    send_message_fn=AsyncMock(),
-                    poll_fn=AsyncMock(return_value=[]),
-                    once=True,
-                    get_offset_fn=MagicMock(return_value=0),
-                    save_offset_fn=MagicMock(),
-                    enable_heartbeat=False,
-                )
+                with patch("corphish.daemon.run_cron_scheduler", new=AsyncMock()):
+                    await run_daemon(
+                        get_token_fn=MagicMock(return_value="tok"),
+                        build_bot_fn=MagicMock(return_value=MagicMock()),
+                        load_config_fn=MagicMock(return_value={"chat_id": 42}),
+                        send_message_fn=AsyncMock(),
+                        poll_fn=AsyncMock(return_value=[]),
+                        once=True,
+                        get_offset_fn=MagicMock(return_value=0),
+                        save_offset_fn=MagicMock(),
+                        enable_heartbeat=False,
+                    )
 
     assert not heartbeat_called
 
@@ -755,3 +760,181 @@ async def test_heartbeat_sends_escalated_response():
         text="Here is your detailed answer.", db_path=None
     )
 
+
+# --- Cron Scheduler Tests ---
+
+
+def _make_cron_job(
+    job_id=1,
+    name="test-job",
+    prompt="Test prompt",
+    cron_expr="*/5 * * * *",
+    schedule_type="recurring",
+    next_run_epoch=1000,
+    enabled=1,
+):
+    """Creates a mock cron job dict."""
+    return {
+        "id": job_id,
+        "name": name,
+        "prompt": prompt,
+        "cron_expr": cron_expr,
+        "schedule_type": schedule_type,
+        "next_run_epoch": next_run_epoch,
+        "enabled": enabled,
+        "created_at": "2024-01-01T00:00:00Z",
+    }
+
+
+def _make_cron_scheduler_deps(due_jobs=None, stale_jobs=None):
+    """Returns a dict of mock dependencies for run_cron_scheduler."""
+    mock_claude = MagicMock()
+    mock_claude.lock = asyncio.Lock()
+    mock_claude.send_heartbeat = AsyncMock(return_value="Cron job output!")
+
+    return {
+        "get_token_fn": MagicMock(return_value="tok"),
+        "build_bot_fn": MagicMock(return_value=MagicMock()),
+        "load_config_fn": MagicMock(return_value={"chat_id": 42}),
+        "send_message_fn": AsyncMock(),
+        "claude": mock_claude,
+        "once": True,
+        "db_path": None,
+        "get_timezone_fn": MagicMock(return_value=""),
+        "get_due_jobs_fn": AsyncMock(return_value=due_jobs or []),
+        "update_next_run_fn": AsyncMock(),
+        "disable_job_fn": AsyncMock(),
+        "advance_stale_fn": AsyncMock(return_value=stale_jobs or []),
+    }
+
+
+async def test_cron_scheduler_dispatches_due_job():
+    """Cron scheduler should dispatch a background task for a due job."""
+    job = _make_cron_job()
+    deps = _make_cron_scheduler_deps(due_jobs=[job])
+
+    dispatched_jobs = []
+
+    async def mock_run_cron_job(job, **kwargs):
+        dispatched_jobs.append(job["name"])
+
+    with patch("corphish.daemon.asyncio.sleep", new=AsyncMock()):
+        with patch("corphish.daemon._run_cron_job", new=mock_run_cron_job):
+            await run_cron_scheduler(**deps)
+
+    # Allow background tasks to complete
+    await asyncio.sleep(0)
+
+    assert job["name"] in dispatched_jobs
+
+
+async def test_cron_scheduler_advances_recurring_job():
+    """Cron scheduler should update next_run_epoch for recurring jobs."""
+    job = _make_cron_job(schedule_type="recurring")
+    deps = _make_cron_scheduler_deps(due_jobs=[job])
+
+    with patch("corphish.daemon.asyncio.sleep", new=AsyncMock()):
+        await run_cron_scheduler(**deps)
+
+    # next run should have been updated
+    deps["update_next_run_fn"].assert_awaited_once()
+    call_args = deps["update_next_run_fn"].call_args
+    assert call_args[0][0] == job["id"]  # first positional arg is job_id
+    # disable should NOT have been called
+    deps["disable_job_fn"].assert_not_awaited()
+
+
+async def test_cron_scheduler_disables_once_job():
+    """Cron scheduler should disable a one-shot job after it fires."""
+    job = _make_cron_job(schedule_type="once")
+    deps = _make_cron_scheduler_deps(due_jobs=[job])
+
+    with patch("corphish.daemon.asyncio.sleep", new=AsyncMock()):
+        await run_cron_scheduler(**deps)
+
+    # Job should be disabled
+    deps["disable_job_fn"].assert_awaited_once_with(job["id"], db_path=None)
+    # next_run should NOT have been updated
+    deps["update_next_run_fn"].assert_not_awaited()
+
+
+async def test_cron_scheduler_normalizes_stale_jobs():
+    """Cron scheduler should advance stale jobs at startup."""
+    stale_job = _make_cron_job(name="stale-job", next_run_epoch=100)
+    deps = _make_cron_scheduler_deps(stale_jobs=[stale_job])
+
+    with patch("corphish.daemon.asyncio.sleep", new=AsyncMock()):
+        await run_cron_scheduler(**deps)
+
+    # advance_stale_fn should have been called at startup
+    deps["advance_stale_fn"].assert_awaited_once()
+    # update_next_run_fn should have been called for the stale job
+    deps["update_next_run_fn"].assert_awaited_once()
+    call_args = deps["update_next_run_fn"].call_args
+    assert call_args[0][0] == stale_job["id"]
+
+
+async def test_cron_scheduler_no_due_jobs():
+    """Cron scheduler should do nothing when no jobs are due."""
+    deps = _make_cron_scheduler_deps(due_jobs=[])
+
+    with patch("corphish.daemon.asyncio.sleep", new=AsyncMock()):
+        await run_cron_scheduler(**deps)
+
+    deps["claude"].send_heartbeat.assert_not_awaited()
+    deps["update_next_run_fn"].assert_not_awaited()
+    deps["disable_job_fn"].assert_not_awaited()
+
+
+async def test_daemon_includes_cron_scheduler():
+    """run_daemon should start cron scheduler when enabled."""
+    cron_called = False
+
+    async def mock_cron(**kwargs):
+        nonlocal cron_called
+        cron_called = True
+
+    with patch("corphish.daemon.run_message_consumer", new=AsyncMock()):
+        with patch("corphish.daemon.run_message_processor", new=AsyncMock()):
+            with patch("corphish.daemon.run_heartbeat_runner", new=AsyncMock()):
+                with patch("corphish.daemon.run_cron_scheduler", new=mock_cron):
+                    await run_daemon(
+                        get_token_fn=MagicMock(return_value="tok"),
+                        build_bot_fn=MagicMock(return_value=MagicMock()),
+                        load_config_fn=MagicMock(return_value={"chat_id": 42}),
+                        send_message_fn=AsyncMock(),
+                        poll_fn=AsyncMock(return_value=[]),
+                        once=True,
+                        get_offset_fn=MagicMock(return_value=0),
+                        save_offset_fn=MagicMock(),
+                        enable_cron=True,
+                    )
+
+    assert cron_called
+
+
+async def test_daemon_can_disable_cron_scheduler():
+    """run_daemon should not start cron scheduler when disabled."""
+    cron_called = False
+
+    async def mock_cron(**kwargs):
+        nonlocal cron_called
+        cron_called = True
+
+    with patch("corphish.daemon.run_message_consumer", new=AsyncMock()):
+        with patch("corphish.daemon.run_message_processor", new=AsyncMock()):
+            with patch("corphish.daemon.run_heartbeat_runner", new=AsyncMock()):
+                with patch("corphish.daemon.run_cron_scheduler", new=mock_cron):
+                    await run_daemon(
+                        get_token_fn=MagicMock(return_value="tok"),
+                        build_bot_fn=MagicMock(return_value=MagicMock()),
+                        load_config_fn=MagicMock(return_value={"chat_id": 42}),
+                        send_message_fn=AsyncMock(),
+                        poll_fn=AsyncMock(return_value=[]),
+                        once=True,
+                        get_offset_fn=MagicMock(return_value=0),
+                        save_offset_fn=MagicMock(),
+                        enable_cron=False,
+                    )
+
+    assert not cron_called

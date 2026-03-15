@@ -18,7 +18,7 @@ from . import config
 logger = logging.getLogger(__name__)
 
 # Schema version for migrations
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def get_db_path() -> Path:
@@ -126,6 +126,216 @@ async def init_db(db_path: Optional[Path] = None) -> None:
 
             await db.commit()
             logger.info("Database schema version 2 applied")
+
+        if current_version < 3:
+            logger.info("Applying database schema version 3 (cron job tables)")
+
+            # Create cron_jobs table
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS cron_jobs (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name           TEXT NOT NULL UNIQUE,
+                    prompt         TEXT NOT NULL,
+                    cron_expr      TEXT NOT NULL,
+                    schedule_type  TEXT NOT NULL DEFAULT 'recurring'
+                                   CHECK(schedule_type IN ('recurring', 'once')),
+                    next_run_epoch INTEGER NOT NULL,
+                    enabled        INTEGER NOT NULL DEFAULT 1,
+                    created_at     TEXT NOT NULL
+                )
+                """
+            )
+
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_cron_jobs_next_run ON cron_jobs(enabled, next_run_epoch)"
+            )
+
+            # Create cron_job_runs table
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS cron_job_runs (
+                    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id           INTEGER NOT NULL REFERENCES cron_jobs(id),
+                    ran_at           INTEGER NOT NULL,
+                    status           TEXT NOT NULL CHECK(status IN ('completed', 'error', 'skipped')),
+                    delivered        TEXT NOT NULL CHECK(delivered IN ('delivered', 'suppressed')),
+                    response_preview TEXT,
+                    error            TEXT
+                )
+                """
+            )
+
+            # Record schema version
+            await db.execute(
+                "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
+                (3, datetime.now(timezone.utc).isoformat()),
+            )
+
+            await db.commit()
+            logger.info("Database schema version 3 applied")
+
+
+async def get_due_cron_jobs(
+    now: int,
+    db_path: Optional[Path] = None,
+) -> list[dict]:
+    """Returns enabled cron jobs whose next_run_epoch is due.
+
+    Args:
+        now: Current unix timestamp.
+        db_path: Path to the database file. Defaults to get_db_path().
+
+    Returns:
+        A list of dicts for each due cron job.
+    """
+    path = db_path or get_db_path()
+    async with aiosqlite.connect(path) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT id, name, prompt, cron_expr, schedule_type, next_run_epoch, enabled, created_at
+            FROM cron_jobs
+            WHERE enabled = 1 AND next_run_epoch <= ?
+            ORDER BY next_run_epoch ASC
+            """,
+            (now,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
+async def update_cron_job_next_run(
+    job_id: int,
+    next_epoch: int,
+    db_path: Optional[Path] = None,
+) -> None:
+    """Updates the next_run_epoch for a cron job.
+
+    Args:
+        job_id: The database ID of the cron job.
+        next_epoch: The new next fire time as a unix epoch.
+        db_path: Path to the database file. Defaults to get_db_path().
+    """
+    path = db_path or get_db_path()
+    async with aiosqlite.connect(path) as db:
+        await db.execute(
+            "UPDATE cron_jobs SET next_run_epoch = ? WHERE id = ?",
+            (next_epoch, job_id),
+        )
+        await db.commit()
+
+
+async def disable_cron_job(
+    job_id: int,
+    db_path: Optional[Path] = None,
+) -> None:
+    """Disables a cron job by setting enabled=0.
+
+    Args:
+        job_id: The database ID of the cron job.
+        db_path: Path to the database file. Defaults to get_db_path().
+    """
+    path = db_path or get_db_path()
+    async with aiosqlite.connect(path) as db:
+        await db.execute(
+            "UPDATE cron_jobs SET enabled = 0 WHERE id = ?",
+            (job_id,),
+        )
+        await db.commit()
+
+
+async def insert_cron_job_run(
+    job_id: int,
+    ran_at: int,
+    status: str,
+    delivered: str,
+    response_preview: Optional[str] = None,
+    error: Optional[str] = None,
+    db_path: Optional[Path] = None,
+) -> int:
+    """Inserts a cron job run record.
+
+    Args:
+        job_id: The database ID of the cron job.
+        ran_at: The unix timestamp when the job ran.
+        status: One of 'completed', 'error', or 'skipped'.
+        delivered: One of 'delivered' or 'suppressed'.
+        response_preview: Optional truncated response preview.
+        error: Optional error message.
+        db_path: Path to the database file. Defaults to get_db_path().
+
+    Returns:
+        The database ID of the inserted run record.
+    """
+    path = db_path or get_db_path()
+    async with aiosqlite.connect(path) as db:
+        cursor = await db.execute(
+            """
+            INSERT INTO cron_job_runs (job_id, ran_at, status, delivered, response_preview, error)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (job_id, ran_at, status, delivered, response_preview, error),
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def get_all_cron_jobs(
+    db_path: Optional[Path] = None,
+) -> list[dict]:
+    """Returns all cron jobs ordered by name.
+
+    Args:
+        db_path: Path to the database file. Defaults to get_db_path().
+
+    Returns:
+        A list of dicts for all cron jobs.
+    """
+    path = db_path or get_db_path()
+    async with aiosqlite.connect(path) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT id, name, prompt, cron_expr, schedule_type, next_run_epoch, enabled, created_at
+            FROM cron_jobs
+            ORDER BY name ASC
+            """
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
+async def advance_stale_cron_jobs(
+    cutoff_epoch: int,
+    db_path: Optional[Path] = None,
+) -> list[dict]:
+    """Returns enabled jobs with next_run_epoch older than cutoff_epoch.
+
+    These are jobs that are considered stale and need their next_run_epoch
+    advanced to avoid firing a backlog of missed runs.
+
+    Args:
+        cutoff_epoch: Unix timestamp; jobs older than this are stale.
+        db_path: Path to the database file. Defaults to get_db_path().
+
+    Returns:
+        A list of dicts for stale cron jobs.
+    """
+    path = db_path or get_db_path()
+    async with aiosqlite.connect(path) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT id, name, prompt, cron_expr, schedule_type, next_run_epoch, enabled, created_at
+            FROM cron_jobs
+            WHERE enabled = 1 AND next_run_epoch < ?
+            ORDER BY name ASC
+            """,
+            (cutoff_epoch,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
 
 
 async def insert_incoming_message(
