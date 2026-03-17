@@ -10,6 +10,7 @@ from corphish.claude_client import (
     _build_heartbeat_options,
     _build_options,
     _load_system_prompt,
+    _parse_skill_frontmatter,
 )
 
 
@@ -105,6 +106,63 @@ def test_load_system_prompt_returns_string():
     assert len(prompt) > 0
 
 
+def test_load_system_prompt_includes_installed_skills(tmp_path, monkeypatch):
+    """Skill name and description (not full content) are included in the system prompt."""
+    skill_dir = tmp_path / ".claude" / "skills" / "testskill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: testskill\ndescription: Does the thing.\n---\nFull instructions here."
+    )
+
+    monkeypatch.setattr("corphish.claude_client.Path.home", lambda: tmp_path)
+
+    prompt = _load_system_prompt()
+    assert "testskill" in prompt
+    assert "Does the thing." in prompt
+    # Full content should NOT be inlined
+    assert "Full instructions here." not in prompt
+
+
+def test_load_system_prompt_no_skills_dir(tmp_path, monkeypatch):
+    """Missing ~/.claude/skills/ is handled gracefully."""
+    monkeypatch.setattr("corphish.claude_client.Path.home", lambda: tmp_path)
+
+    prompt = _load_system_prompt()
+    assert isinstance(prompt, str)
+    assert len(prompt) > 0
+
+
+# ---------------------------------------------------------------------------
+# _parse_skill_frontmatter tests
+# ---------------------------------------------------------------------------
+
+
+def test_parse_skill_frontmatter_extracts_name_and_description():
+    text = "---\nname: genzslang\ndescription: Talk in Gen-Z slang.\n---\nContent."
+    name, desc = _parse_skill_frontmatter(text)
+    assert name == "genzslang"
+    assert desc == "Talk in Gen-Z slang."
+
+
+def test_parse_skill_frontmatter_missing_frontmatter():
+    name, desc = _parse_skill_frontmatter("No frontmatter here.")
+    assert name == ""
+    assert desc == ""
+
+
+def test_parse_skill_frontmatter_missing_closing_delimiter():
+    name, desc = _parse_skill_frontmatter("---\nname: foo\n")
+    assert name == ""
+    assert desc == ""
+
+
+def test_parse_skill_frontmatter_empty_description():
+    text = "---\nname: foo\n---\nContent."
+    name, desc = _parse_skill_frontmatter(text)
+    assert name == "foo"
+    assert desc == ""
+
+
 # ---------------------------------------------------------------------------
 # Options construction tests
 # ---------------------------------------------------------------------------
@@ -165,6 +223,21 @@ def test_build_options_sets_model():
 def test_build_options_enables_continue_conversation():
     opts = _build_options(system_prompt="test")
     assert opts.continue_conversation is True
+
+
+def test_build_options_enables_skill_loading():
+    opts = _build_options(system_prompt="test")
+    assert opts.setting_sources is not None
+    assert "user" in opts.setting_sources
+    assert "project" in opts.setting_sources
+    assert "Skill" in opts.allowed_tools
+
+
+def test_build_heartbeat_options_does_not_load_skills():
+    # Heartbeat uses a plain prompt with no skill discovery — skills are not
+    # needed for reflection-only calls and would add unnecessary token cost.
+    opts = _build_heartbeat_options(heartbeat_prompt="Check in.")
+    assert opts.setting_sources is None
 
 
 # ---------------------------------------------------------------------------

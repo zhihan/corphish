@@ -27,6 +27,30 @@ _DEFAULT_MODEL = MODEL_SONNET
 _DISALLOWED_TOOLS = ["EnterPlanMode", "ExitPlanMode", "AskUserQuestion"]
 
 
+def _parse_skill_frontmatter(text: str) -> tuple[str, str]:
+    """Extracts name and description from a SKILL.md YAML frontmatter block.
+
+    Args:
+        text: Raw SKILL.md content.
+
+    Returns:
+        (name, description) strings, both empty if not found.
+    """
+    if not text.startswith("---"):
+        return "", ""
+    end = text.find("---", 3)
+    if end == -1:
+        return "", ""
+    frontmatter = text[3:end]
+    name = description = ""
+    for line in frontmatter.splitlines():
+        if line.startswith("name:"):
+            name = line[5:].strip()
+        elif line.startswith("description:"):
+            description = line[12:].strip()
+    return name, description
+
+
 def _load_system_prompt() -> str:
     """Loads the system prompt from IDENTITY.md and any skill documents.
 
@@ -40,12 +64,35 @@ def _load_system_prompt() -> str:
         else "You are Corphish, a personal AI assistant."
     )
 
-    # Append skill documents
+    # Append built-in skill documents
     parts = [identity]
     for skill_file in ["CRON.md"]:
         skill_path = root / skill_file
         if skill_path.exists():
             parts.append(skill_path.read_text())
+
+    # Append metadata for installed user skills from ~/.claude/skills/.
+    # Only name, description, and file path are included here — full content
+    # is loaded on demand by reading the SKILL.md file directly.
+    user_skills_dir = Path.home() / ".claude" / "skills"
+    if user_skills_dir.exists():
+        skill_entries = []
+        for skill_dir in sorted(user_skills_dir.iterdir()):
+            skill_md = skill_dir / "SKILL.md"
+            if not (skill_dir.is_dir() and skill_md.exists()):
+                continue
+            name, description = _parse_skill_frontmatter(skill_md.read_text())
+            if name:
+                skill_entries.append(
+                    f"- **{name}**: {description} (full instructions: `{skill_md}`)"
+                )
+        if skill_entries:
+            parts.append(
+                "## Installed Skills\n\n"
+                "The following skills are available. "
+                "Read the linked file for full instructions before using a skill.\n\n"
+                + "\n".join(skill_entries)
+            )
 
     return "\n\n---\n\n".join(parts)
 
@@ -107,10 +154,12 @@ def _build_options(
             "append": prompt_text,
         },
         permission_mode="bypassPermissions",
+        allowed_tools=["Skill"],
         disallowed_tools=list(_DISALLOWED_TOOLS),
         model=model,
         continue_conversation=True,
         cwd=str(config.get_config_dir()),
+        setting_sources=["user", "project"],
     )
 
 
