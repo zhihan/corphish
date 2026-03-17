@@ -147,11 +147,20 @@ class ClaudeClient:
         )
         self._query = query_fn or query
         self.lock = asyncio.Lock()
+        self.stop_event = asyncio.Event()
 
     @property
     def busy(self) -> bool:
         """Returns True if the lock is currently held."""
         return self.lock.locked()
+
+    def request_stop(self) -> None:
+        """Signals any in-progress stream to stop yielding at the next chunk boundary."""
+        self.stop_event.set()
+
+    def clear_stop(self) -> None:
+        """Clears the stop signal so normal processing can resume."""
+        self.stop_event.clear()
 
     def reset(self) -> None:
         """Resets the conversation by recreating the options.
@@ -173,7 +182,7 @@ class ClaudeClient:
             system_prompt=custom_prompt,
         )
 
-    async def stream(self, user_text: str):
+    async def stream(self, user_text: str, stop_event: Optional[asyncio.Event] = None):
         """Streams Claude's text response as chunks arrive.
 
         Yields text from each AssistantMessage as Claude produces it rather
@@ -181,8 +190,13 @@ class ClaudeClient:
         always fully consumed so that the SDK's cancel scope is torn down in
         the originating task (same fix as send()).
 
+        If stop_event is provided and set, stops yielding chunks but continues
+        consuming the underlying generator until exhausted (preserves SDK
+        cancel-scope safety).
+
         Args:
             user_text: The message from the user.
+            stop_event: Optional event; when set, stops yielding new chunks.
 
         Yields:
             Text chunks from Claude's AssistantMessage blocks.
@@ -190,6 +204,9 @@ class ClaudeClient:
         done = False
         async for message in self._query(prompt=user_text, options=self._options):
             if done:
+                continue
+            if stop_event is not None and stop_event.is_set():
+                done = True
                 continue
             if isinstance(message, ResultMessage):
                 done = True

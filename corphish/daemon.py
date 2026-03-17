@@ -64,6 +64,8 @@ async def run_message_consumer(
     save_offset_fn: Callable = config.save_update_offset,
     db_path: Optional[Path] = None,
     insert_incoming_fn: Callable = db.insert_incoming_message,
+    claude: Optional[ClaudeClient] = None,
+    insert_outgoing_fn: Callable = db.insert_outgoing_message,
 ) -> None:
     """Runs the message consumer loop.
 
@@ -81,6 +83,8 @@ async def run_message_consumer(
         save_offset_fn: Persists the update offset.
         db_path: Path to the database file.
         insert_incoming_fn: Function to insert incoming messages to DB.
+        claude: Shared ClaudeClient; if provided, stop commands signal it directly.
+        insert_outgoing_fn: Function to insert outgoing messages to DB.
     """
     token = get_token_fn()
     bot = build_bot_fn(token)
@@ -117,6 +121,16 @@ async def run_message_consumer(
 
             user_text = update.message.text
             logger.info("[consumer] Received message: %s", user_text[:50])
+
+            if _is_stop_command(user_text):
+                logger.info("[consumer] Stop command received")
+                if claude is not None:
+                    claude.request_stop()
+                    try:
+                        await insert_outgoing_fn(text="Stopped.", db_path=db_path)
+                    except Exception:
+                        logger.exception("Failed to insert stop response")
+                continue
 
             try:
                 await insert_incoming_fn(
@@ -206,9 +220,14 @@ async def run_message_processor(
                 # same message to be picked up and processed again.
                 await mark_processed_fn(message["id"], db_path=db_path)
 
+                # Clear any stale stop signal before starting a new stream
+                client.clear_stop()
+
                 try:
                     async with client.lock:
-                        async for chunk in client.stream(user_text):
+                        async for chunk in client.stream(
+                            user_text, stop_event=client.stop_event
+                        ):
                             logger.info("[assistant] %s", chunk[:50])
                             try:
                                 outgoing_id = await insert_outgoing_fn(
@@ -245,6 +264,11 @@ async def run_message_processor(
                     )
                     continue
 
+                if client.stop_event.is_set():
+                    client.clear_stop()
+                    logger.info("[processor] Stream stopped by stop command")
+                    continue
+
                 turn_count += 1
                 if turn_count >= get_max_turns_fn():
                     async with client.lock:
@@ -272,6 +296,17 @@ async def run_message_processor(
             break
 
         await asyncio.sleep(1)
+
+
+_STOP_COMMANDS = frozenset([
+    "stop", "/stop", "!stop",
+    "kill", "/kill", "!kill",
+])
+
+
+def _is_stop_command(text: str) -> bool:
+    """Returns True if the text is a stop/kill command (case-insensitive)."""
+    return text.strip().lower() in _STOP_COMMANDS
 
 
 _HEARTBEAT_TOKEN = "HEARTBEAT_OK"
@@ -584,6 +619,7 @@ async def run_cron_scheduler(
     update_next_run_fn: Callable = db.update_cron_job_next_run,
     disable_job_fn: Callable = db.disable_cron_job,
     advance_stale_fn: Callable = db.advance_stale_cron_jobs,
+    cron_prev_run_fn: Callable = cron_module.cron_prev_run,
 ) -> None:
     """Runs the cron scheduler loop.
 
@@ -635,7 +671,7 @@ async def run_cron_scheduler(
             # (i.e. "now") rather than a real scheduled time — advance it instead
             # of firing immediately.
             _POLL_INTERVAL = 30
-            prev_fire = cron_module.cron_prev_run(job["cron_expr"], now, tz)
+            prev_fire = cron_prev_run_fn(job["cron_expr"], now, tz)
             if now - prev_fire > _POLL_INTERVAL * 2:
                 # Not a genuine fire window — compute actual next occurrence
                 next_run = cron_module.cron_next_run(job["cron_expr"], now, tz)
@@ -727,6 +763,7 @@ async def run_daemon(
             get_offset_fn=get_offset_fn,
             save_offset_fn=save_offset_fn,
             db_path=db_path,
+            claude=client,
         ),
         run_message_processor(
             get_token_fn=get_token_fn,
