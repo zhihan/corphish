@@ -86,6 +86,27 @@ async def _wait_for_first_message(bot: Bot) -> int:
         await asyncio.sleep(1)
 
 
+def _install_skills() -> None:
+    """Copies bundled skills from the package into the user Claude skills dir.
+
+    Skills are stored in corphish/skills/ inside the package and installed
+    to ~/.claude/skills/ — the user-level skills directory that Claude Code
+    always discovers regardless of the working directory.
+    """
+    skills_src = Path(__file__).parent / "skills"
+    skills_dst = Path.home() / ".claude" / "skills"
+    if not skills_src.exists():
+        return
+    for skill_dir in skills_src.iterdir():
+        if skill_dir.is_dir():
+            dst = skills_dst / skill_dir.name
+            dst.mkdir(parents=True, exist_ok=True)
+            for f in skill_dir.iterdir():
+                if f.is_file():
+                    (dst / f.name).write_bytes(f.read_bytes())
+    logger.info("Skills installed to %s", skills_dst)
+
+
 def _install_launchd() -> None:
     """Writes and loads the launchd plist for automatic daemon startup.
 
@@ -125,6 +146,7 @@ async def run_bootstrap(
     send_message_fn: Callable = chat.send_message,
     save_config_fn: Callable = config.save_config,
     install_launchd_fn: Optional[Callable] = None,
+    install_skills_fn: Optional[Callable] = None,
 ) -> None:
     """Runs the first-run bootstrap flow.
 
@@ -133,7 +155,8 @@ async def run_bootstrap(
       2. Wait for the user's first Telegram message (establishes chat_id)
       3. Save chat_id to config
       4. Send greeting
-      5. Install and load the launchd plist
+      5. Install bundled skills to the config dir
+      6. Install and load the launchd plist
 
     All dependencies are injectable for testing.
 
@@ -144,6 +167,8 @@ async def run_bootstrap(
         send_message_fn: Async callable(bot, chat_id, text) sending a message.
         save_config_fn: Callable(data) persisting config.
         install_launchd_fn: Callable() installing the launchd plist. Defaults
+            to the real implementation.
+        install_skills_fn: Callable() installing bundled skills. Defaults
             to the real implementation.
 
     Raises:
@@ -167,7 +192,11 @@ async def run_bootstrap(
     await send_message_fn(bot, chat_id, GREETING)
     logger.info("Greeting sent")
 
-    # Phase 5: Install launchd.
+    # Phase 5: Install bundled skills.
+    skills_fn = install_skills_fn or _install_skills
+    skills_fn()
+
+    # Phase 6: Install launchd.
     install_fn = install_launchd_fn or _install_launchd
     install_fn()
 

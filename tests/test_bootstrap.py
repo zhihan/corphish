@@ -1,11 +1,12 @@
 """Tests for corphish.bootstrap."""
 
 import os
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from corphish.bootstrap import GREETING, run_bootstrap
+from corphish.bootstrap import GREETING, _install_skills, run_bootstrap
 
 
 def _make_deps(chat_id: int = 42):
@@ -18,6 +19,7 @@ def _make_deps(chat_id: int = 42):
         "send_message_fn": AsyncMock(),
         "save_config_fn": MagicMock(),
         "install_launchd_fn": MagicMock(),
+        "install_skills_fn": MagicMock(),
         "_bot": mock_bot,
     }
 
@@ -33,6 +35,7 @@ async def test_all_phases_called(monkeypatch):
         send_message_fn=deps["send_message_fn"],
         save_config_fn=deps["save_config_fn"],
         install_launchd_fn=deps["install_launchd_fn"],
+        install_skills_fn=deps["install_skills_fn"],
     )
 
     deps["get_token_fn"].assert_called_once()
@@ -40,6 +43,7 @@ async def test_all_phases_called(monkeypatch):
     deps["wait_for_message_fn"].assert_awaited_once_with(deps["_bot"])
     deps["save_config_fn"].assert_called_once_with({"chat_id": 99})
     deps["send_message_fn"].assert_awaited_once()
+    deps["install_skills_fn"].assert_called_once()
     deps["install_launchd_fn"].assert_called_once()
 
 
@@ -56,6 +60,7 @@ async def test_chat_id_saved_to_config(monkeypatch):
         send_message_fn=deps["send_message_fn"],
         save_config_fn=deps["save_config_fn"],
         install_launchd_fn=deps["install_launchd_fn"],
+        install_skills_fn=deps["install_skills_fn"],
     )
 
     assert saved["chat_id"] == 12345
@@ -72,6 +77,7 @@ async def test_greeting_sent_to_correct_chat_id(monkeypatch):
         send_message_fn=deps["send_message_fn"],
         save_config_fn=deps["save_config_fn"],
         install_launchd_fn=deps["install_launchd_fn"],
+        install_skills_fn=deps["install_skills_fn"],
     )
 
     deps["send_message_fn"].assert_awaited_once_with(deps["_bot"], 77, GREETING)
@@ -90,6 +96,7 @@ async def test_missing_bot_token_raises(monkeypatch):
             send_message_fn=deps["send_message_fn"],
             save_config_fn=deps["save_config_fn"],
             install_launchd_fn=deps["install_launchd_fn"],
+            install_skills_fn=deps["install_skills_fn"],
         )
 
 
@@ -105,7 +112,35 @@ async def test_missing_anthropic_key_raises(monkeypatch):
             send_message_fn=deps["send_message_fn"],
             save_config_fn=deps["save_config_fn"],
             install_launchd_fn=deps["install_launchd_fn"],
+            install_skills_fn=deps["install_skills_fn"],
         )
+
+
+# ---------------------------------------------------------------------------
+# _install_skills tests
+# ---------------------------------------------------------------------------
+
+
+def test_install_skills_copies_bundled_skills_to_user_claude_dir(tmp_path, monkeypatch):
+    """_install_skills copies each skill dir from the package to ~/.claude/skills/."""
+    monkeypatch.setattr("corphish.bootstrap.Path.home", lambda: tmp_path)
+
+    _install_skills()
+
+    installed = tmp_path / ".claude" / "skills" / "genzslang" / "SKILL.md"
+    assert installed.exists(), f"Expected {installed} to exist after _install_skills()"
+    assert "genzslang" in installed.read_text()
+
+
+def test_install_skills_is_idempotent(tmp_path, monkeypatch):
+    """Running _install_skills twice does not raise and keeps the files intact."""
+    monkeypatch.setattr("corphish.bootstrap.Path.home", lambda: tmp_path)
+
+    _install_skills()
+    _install_skills()  # second call must not raise
+
+    installed = tmp_path / ".claude" / "skills" / "genzslang" / "SKILL.md"
+    assert installed.exists()
 
 
 async def test_phases_called_in_order(monkeypatch):
@@ -131,6 +166,9 @@ async def test_phases_called_in_order(monkeypatch):
     deps["install_launchd_fn"] = MagicMock(
         side_effect=lambda: call_order.append("install_launchd")
     )
+    deps["install_skills_fn"] = MagicMock(
+        side_effect=lambda: call_order.append("install_skills")
+    )
 
     await run_bootstrap(**{k: v for k, v in deps.items() if k != "_bot"})
 
@@ -140,5 +178,6 @@ async def test_phases_called_in_order(monkeypatch):
         "wait",
         "save_config",
         "send_message",
+        "install_skills",
         "install_launchd",
     ]
