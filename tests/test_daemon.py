@@ -9,6 +9,7 @@ import pytest
 
 from corphish.daemon import (
     _get_model_for_name,
+    _is_stop_command,
     _needs_escalation,
     is_heartbeat_response,
     run_cron_scheduler,
@@ -53,7 +54,7 @@ def _make_consumer_deps(chat_id=42, updates=None, initial_offset=0):
 def _make_stream_fn(*chunks):
     """Returns an async generator function that yields the given chunks."""
 
-    async def _gen(text):
+    async def _gen(text, stop_event=None):
         for chunk in chunks:
             yield chunk
 
@@ -63,7 +64,7 @@ def _make_stream_fn(*chunks):
 def _make_failing_stream_fn(exc):
     """Returns an async generator function that raises exc immediately."""
 
-    async def _gen(text):
+    async def _gen(text, stop_event=None):
         raise exc
         yield  # make it an async generator
 
@@ -75,6 +76,8 @@ def _make_processor_deps(chat_id=42):
     mock_bot = MagicMock()
     mock_claude = MagicMock()
     mock_claude.lock = __import__("asyncio").Lock()
+    mock_claude.stop_event = asyncio.Event()
+    mock_claude.clear_stop = mock_claude.stop_event.clear
     mock_claude.stream = _make_stream_fn("claude says hi")
 
     mock_sent_message = MagicMock()
@@ -788,9 +791,15 @@ def _make_cron_job(
 
 def _make_cron_scheduler_deps(due_jobs=None, stale_jobs=None):
     """Returns a dict of mock dependencies for run_cron_scheduler."""
+    import time as _time
+
     mock_claude = MagicMock()
     mock_claude.lock = asyncio.Lock()
     mock_claude.send_heartbeat = AsyncMock(return_value="Cron job output!")
+
+    # Return a prev_fire 10 seconds ago so jobs always pass the window check
+    def _recent_prev_run(expr, before, tz=None):
+        return int(_time.time()) - 10
 
     return {
         "get_token_fn": MagicMock(return_value="tok"),
@@ -805,6 +814,7 @@ def _make_cron_scheduler_deps(due_jobs=None, stale_jobs=None):
         "update_next_run_fn": AsyncMock(),
         "disable_job_fn": AsyncMock(),
         "advance_stale_fn": AsyncMock(return_value=stale_jobs or []),
+        "cron_prev_run_fn": _recent_prev_run,
     }
 
 
@@ -938,3 +948,136 @@ async def test_daemon_can_disable_cron_scheduler():
                     )
 
     assert not cron_called
+
+
+# --- Stop Command Tests ---
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["stop", "/stop", "!stop", "kill", "/kill", "!kill",
+     "STOP", "/STOP", "Stop", "/Kill", "KILL"],
+)
+def test_is_stop_command_variants(text):
+    """_is_stop_command should recognise all stop variants case-insensitively."""
+    assert _is_stop_command(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["hello", "/reset", "stop that", "don't stop", "stopping", "killer"],
+)
+def test_is_stop_command_negative(text):
+    """_is_stop_command should not match normal messages."""
+    assert not _is_stop_command(text)
+
+
+async def test_consumer_stop_command_signals_claude_and_does_not_queue():
+    """Consumer should signal claude.request_stop() and NOT insert into incoming."""
+    update = _make_update(1, 42, "/stop")
+    deps = _make_consumer_deps(chat_id=42, updates=[update])
+    deps["insert_outgoing_fn"] = AsyncMock(return_value=1)
+
+    mock_claude = MagicMock()
+    mock_claude.request_stop = MagicMock()
+
+    await run_message_consumer(
+        **{k: v for k, v in deps.items() if k != "_bot"}, claude=mock_claude
+    )
+
+    mock_claude.request_stop.assert_called_once()
+    deps["insert_incoming_fn"].assert_not_awaited()
+    deps["insert_outgoing_fn"].assert_awaited_once()
+    text_sent = deps["insert_outgoing_fn"].call_args[1]["text"]
+    assert text_sent == "Stopped."
+
+
+async def test_consumer_stop_without_claude_does_not_crash():
+    """Consumer with claude=None should silently ignore stop command."""
+    update = _make_update(1, 42, "stop")
+    deps = _make_consumer_deps(chat_id=42, updates=[update])
+
+    await run_message_consumer(**{k: v for k, v in deps.items() if k != "_bot"}, claude=None)
+
+    deps["insert_incoming_fn"].assert_not_awaited()
+
+
+async def test_consumer_all_stop_variants_are_intercepted():
+    """All stop variants bypass the incoming queue."""
+    for variant in ["stop", "/stop", "!stop", "kill", "/kill", "!kill"]:
+        update = _make_update(1, 42, variant)
+        deps = _make_consumer_deps(chat_id=42, updates=[update])
+        deps["insert_outgoing_fn"] = AsyncMock(return_value=1)
+        mock_claude = MagicMock()
+
+        await run_message_consumer(
+            **{k: v for k, v in deps.items() if k != "_bot"}, claude=mock_claude
+        )
+
+        deps["insert_incoming_fn"].assert_not_awaited(), f"variant={variant!r}"
+
+
+async def test_consumer_normal_message_not_treated_as_stop():
+    """Normal messages should still be inserted into the incoming queue."""
+    update = _make_update(1, 42, "hello there")
+    deps = _make_consumer_deps(chat_id=42, updates=[update])
+    mock_claude = MagicMock()
+
+    await run_message_consumer(
+        **{k: v for k, v in deps.items() if k != "_bot"}, claude=mock_claude
+    )
+
+    deps["insert_incoming_fn"].assert_awaited_once()
+    mock_claude.request_stop.assert_not_called()
+
+
+async def test_processor_clears_stop_event_before_stream():
+    """Processor should clear stop_event before starting a new stream."""
+    deps = _make_processor_deps()
+    deps["get_next_unprocessed_fn"] = AsyncMock(
+        return_value={"id": 1, "text": "hello"}
+    )
+    # Pre-set the stop event (stale from a previous stop)
+    deps["claude"].stop_event.set()
+
+    await run_message_processor(**{k: v for k, v in deps.items() if k != "_bot"})
+
+    # After processing, stop_event should be cleared
+    assert not deps["claude"].stop_event.is_set()
+
+
+async def test_processor_stops_stream_mid_flight():
+    """Processor should stop streaming and not count the turn when stopped."""
+    stop_event = asyncio.Event()
+
+    async def _stream_with_stop(text, stop_event=None):
+        yield "first chunk"
+        # Simulate stop arriving; real ClaudeClient.stream() checks this
+        # at the top of each iteration and stops yielding when set
+        if stop_event:
+            stop_event.set()
+        # No second chunk yielded — real stream() honours the event
+
+    mock_claude = MagicMock()
+    mock_claude.lock = asyncio.Lock()
+    mock_claude.stop_event = stop_event
+    mock_claude.clear_stop = stop_event.clear
+    mock_claude.stream = _stream_with_stop
+
+    mock_sent = MagicMock()
+    mock_sent.message_id = 999
+
+    deps = _make_processor_deps()
+    deps["claude"] = mock_claude
+    deps["get_next_unprocessed_fn"] = AsyncMock(
+        side_effect=[{"id": 1, "text": "do something long"}, None]
+    )
+    deps["send_message_fn"] = AsyncMock(return_value=mock_sent)
+    deps["insert_outgoing_fn"] = AsyncMock(return_value=1)
+
+    await run_message_processor(**{k: v for k, v in deps.items() if k != "_bot"})
+
+    # Only the first chunk should have been sent
+    assert deps["send_message_fn"].await_count == 1
+    # stop_event should be cleared after handling
+    assert not stop_event.is_set()

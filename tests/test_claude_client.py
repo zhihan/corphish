@@ -791,3 +791,71 @@ async def test_send_heartbeat_does_not_affect_main_conversation():
 
     assert client._options is original_opts
     assert client._options.continue_conversation is True
+
+
+# ---------------------------------------------------------------------------
+# stop_event / request_stop / clear_stop tests
+# ---------------------------------------------------------------------------
+
+
+def test_request_stop_sets_event():
+    """request_stop() should set the stop_event."""
+    client = _make_client()
+    assert not client.stop_event.is_set()
+    client.request_stop()
+    assert client.stop_event.is_set()
+
+
+def test_clear_stop_clears_event():
+    """clear_stop() should clear the stop_event."""
+    client = _make_client()
+    client.request_stop()
+    client.clear_stop()
+    assert not client.stop_event.is_set()
+
+
+async def test_stream_respects_stop_event():
+    """stream() should stop yielding when stop_event is set, but exhaust the generator."""
+    from claude_agent_sdk import AssistantMessage, TextBlock, ResultMessage
+
+    consumed = []
+
+    async def tracking_query(*, prompt, options):
+        yield AssistantMessage(content=[TextBlock(text="chunk1")], model="t")
+        yield AssistantMessage(content=[TextBlock(text="chunk2")], model="t")
+        yield AssistantMessage(content=[TextBlock(text="chunk3")], model="t")
+        yield ResultMessage(
+            subtype="success", duration_ms=10, duration_api_ms=5,
+            is_error=False, num_turns=1, session_id="s"
+        )
+        consumed.append("generator_exhausted")
+
+    client = _make_client(query_fn=tracking_query)
+    stop = asyncio.Event()
+
+    chunks = []
+    async for chunk in client.stream("hello", stop_event=stop):
+        chunks.append(chunk)
+        stop.set()  # set stop after first chunk
+
+    # Only the first chunk should have been yielded
+    assert chunks == ["chunk1"]
+    # But the generator should have been fully consumed (SDK cancel-scope safety)
+    assert "generator_exhausted" in consumed
+
+
+async def test_stream_without_stop_event_yields_all():
+    """stream() without stop_event should yield all chunks normally."""
+    from claude_agent_sdk import AssistantMessage, TextBlock, ResultMessage
+
+    async def query(*, prompt, options):
+        yield AssistantMessage(content=[TextBlock(text="a")], model="t")
+        yield AssistantMessage(content=[TextBlock(text="b")], model="t")
+        yield ResultMessage(
+            subtype="success", duration_ms=10, duration_api_ms=5,
+            is_error=False, num_turns=1, session_id="s"
+        )
+
+    client = _make_client(query_fn=query)
+    chunks = [chunk async for chunk in client.stream("hello")]
+    assert chunks == ["a", "b"]
